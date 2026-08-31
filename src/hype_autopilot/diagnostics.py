@@ -56,6 +56,7 @@ def operational_status(repository: Repository) -> dict[str, Any]:
               "collection_gaps", "data_quality_events", "health_events", "epochs"]
     tables.append("epoch_configurations")
     tables.append("paper_orders")
+    tables.append("experiment_events")
     counts = {table: repository.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
               for table in tables}
     recent_cycles = [dict(row) for row in repository.db.execute(
@@ -74,6 +75,10 @@ def operational_status(repository: Repository) -> dict[str, Any]:
         "SELECT occurred_at, component, status, details_json FROM health_events "
         "ORDER BY id DESC LIMIT 12"
     ).fetchall()]
+    experiment_events = [dict(row) for row in repository.db.execute(
+        "SELECT experiment_id, event_type, occurred_at, git_commit_hash, config_hash, details_json "
+        "FROM experiment_events ORDER BY occurred_at DESC LIMIT 12"
+    ).fetchall()]
     cycle_times = [row[0] for row in repository.db.execute(
         "SELECT scheduled_at FROM research_cycles WHERE observation_class = 'SOAK' ORDER BY scheduled_at"
     ).fetchall()]
@@ -89,6 +94,7 @@ def operational_status(repository: Repository) -> dict[str, Any]:
     return {"counts": counts, "recent_cycles": recent_cycles, "open_gaps": open_gaps,
             "active_trades": active_trades, "rejected_snapshots": rejected,
             "recent_health": last_health, "missed_soak_cycle_boundaries": missed_cycles,
+            "experiment_events": experiment_events,
             "detector_proxy": detector_proxy_report(repository)}
 
 

@@ -113,6 +113,12 @@ CREATE TABLE IF NOT EXISTS health_events (
   id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, component TEXT NOT NULL,
   status TEXT NOT NULL, details_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS experiment_events (
+  event_id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, event_type TEXT NOT NULL,
+  occurred_at TEXT NOT NULL, git_commit_hash TEXT NOT NULL, config_hash TEXT NOT NULL,
+  details_json TEXT NOT NULL,
+  UNIQUE(experiment_id, event_type, occurred_at)
+);
 CREATE TRIGGER IF NOT EXISTS immutable_snapshots_update
 BEFORE UPDATE ON decision_snapshots BEGIN SELECT RAISE(ABORT, 'decision snapshots are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_snapshots_delete
@@ -125,4 +131,8 @@ CREATE TRIGGER IF NOT EXISTS immutable_epoch_configurations_update
 BEFORE UPDATE ON epoch_configurations BEGIN SELECT RAISE(ABORT, 'epoch configurations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_epoch_configurations_delete
 BEFORE DELETE ON epoch_configurations BEGIN SELECT RAISE(ABORT, 'epoch configurations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_experiment_events_update
+BEFORE UPDATE ON experiment_events BEGIN SELECT RAISE(ABORT, 'experiment events are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_experiment_events_delete
+BEFORE DELETE ON experiment_events BEGIN SELECT RAISE(ABORT, 'experiment events are immutable'); END;
 """

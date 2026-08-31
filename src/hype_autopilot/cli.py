@@ -14,7 +14,11 @@ from hype_autopilot.data.hyperliquid_client import HyperliquidMarketDataClient
 from hype_autopilot.data.models import ObservationClass
 from hype_autopilot.data.repository import Repository
 from hype_autopilot.diagnostics import detector_proxy_report, operational_status, trace_trade
-from hype_autopilot.experiments.registry import register_epoch_configuration, start_epoch
+from hype_autopilot.experiments.registry import (
+    record_experiment_event,
+    register_epoch_configuration,
+    start_epoch,
+)
 from hype_autopilot.hashing import canonical_json
 from hype_autopilot.logging import configure_logging
 from hype_autopilot.operations import CycleRunner, schedule_forever
@@ -78,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     trace = sub.add_parser("trace-trade")
     trace.add_argument("paper_trade_id")
     sub.add_parser("validate-db")
+    event = sub.add_parser("record-experiment-event")
+    event.add_argument("event_type")
+    event.add_argument("--experiment-id", required=True)
+    event.add_argument("--at")
+    event.add_argument("--details-json", default="{}")
     args = parser.parse_args(argv)
 
     base, epoch, repo, runner = _components(args)
@@ -138,6 +147,16 @@ def main(argv: list[str] | None = None) -> int:
                   "duplicate_strategy_scores": duplicates}
         print(json.dumps(result))
         return 0 if integrity == "ok" and not foreign_keys and not duplicates else 1
+    elif args.command == "record-experiment-event":
+        details = json.loads(args.details_json)
+        if not isinstance(details, dict):
+            raise ValueError("--details-json must decode to an object")
+        event_id = record_experiment_event(
+            repo.db, epoch, args.experiment_id, args.event_type,
+            occurred_at=_parse_time(args.at) if args.at else None,
+            details=details,
+        )
+        print(json.dumps({"event_id": event_id, "event_type": args.event_type}))
     return 0
 
 

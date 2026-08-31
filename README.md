@@ -136,6 +136,14 @@ hype-autopilot validate-db
 
 `schedule` runs the reconnecting websocket collector and aligns cycles to UTC quarter-hours with a short ingestion grace. Stop it with Ctrl-C. It is the command for an unscored 24-hour soak test.
 
+Operational soak milestones can be recorded as immutable, append-only evidence tied to the
+current Git commit and frozen configuration hash:
+
+```bash
+hype-autopilot --db data/soak.sqlite3 record-experiment-event SOAK_VERSION_FROZEN \
+  --experiment-id phase1-soak-2026-08-30 --details-json '{"note":"collection version frozen"}'
+```
+
 Only after formal approval should the user run:
 
 ```bash

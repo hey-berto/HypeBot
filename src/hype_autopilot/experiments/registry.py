@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 from datetime import UTC, datetime
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from hype_autopilot.config import config_hash, validate_epoch_config
 from hype_autopilot.hashing import canonical_json
@@ -16,6 +18,32 @@ def _git_hash() -> str | None:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def record_experiment_event(
+    db: sqlite3.Connection,
+    config: dict[str, Any],
+    experiment_id: str,
+    event_type: str,
+    *,
+    occurred_at: datetime | None = None,
+    details: dict[str, Any] | None = None,
+) -> str:
+    """Append immutable operational evidence tied to code and frozen configuration."""
+    commit = _git_hash()
+    if not commit:
+        raise RuntimeError("experiment evidence requires a committed Git revision")
+    at = (occurred_at or datetime.now(UTC)).astimezone(UTC).isoformat()
+    event_id = str(uuid5(NAMESPACE_URL, f"{experiment_id}:{event_type}:{at}"))
+    db.execute(
+        "INSERT OR IGNORE INTO experiment_events "
+        "(event_id, experiment_id, event_type, occurred_at, git_commit_hash, config_hash, details_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (event_id, experiment_id, event_type, at, commit, config_hash(config),
+         json.dumps(details or {}, sort_keys=True, separators=(",", ":"))),
+    )
+    db.commit()
+    return event_id
 
 
 def register_epoch_configuration(db: sqlite3.Connection, config: dict[str, Any]) -> str:
