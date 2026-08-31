@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -78,8 +78,38 @@ class CycleRunner:
             raise
 
 
+def account_for_downtime(runner: CycleRunner, detected_at: datetime) -> list[datetime]:
+    """Persist every elapsed SOAK boundary that could not be run during process downtime."""
+    observation_class = runner.observation_class()
+    if observation_class is not ObservationClass.SOAK:
+        return []
+    latest = runner.repository.latest_cycle_time(observation_class.value)
+    if latest is None:
+        return []
+    boundary = latest + timedelta(minutes=15)
+    last_elapsed = floor_quarter_hour(detected_at)
+    rejected: list[datetime] = []
+    while boundary <= last_elapsed:
+        cycle_id = str(uuid5(
+            NAMESPACE_URL, f"cycle:{observation_class.value}:{boundary.isoformat()}"
+        ))
+        existing = runner.repository.begin_cycle(cycle_id, boundary, observation_class.value)
+        if existing is None:
+            details = {
+                "reason": "PROCESS_DOWNTIME",
+                "detected_at": detected_at,
+                "scoreable": False,
+            }
+            runner.repository.finish_cycle(cycle_id, "REJECTED", None, details)
+            runner.repository.health("cycle", "REJECTED", {"scheduled_at": boundary, **details})
+            rejected.append(boundary)
+        boundary += timedelta(minutes=15)
+    return rejected
+
+
 async def schedule_forever(runner: CycleRunner, collector: MarketDataCollector,
                            websocket: ResilientWebsocketCollector, *, grace_seconds: int = 5) -> None:
+    account_for_downtime(runner, datetime.now(UTC))
     stop = threading.Event()
     thread = threading.Thread(target=websocket.run_forever, args=(stop,), daemon=True)
     thread.start()

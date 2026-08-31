@@ -380,3 +380,10 @@ class Repository:
             (_iso(datetime.now(UTC)), status, snapshot_hash, canonical_json(details), cycle_id),
         )
         self.db.commit()
+
+    def latest_cycle_time(self, observation_class: str) -> datetime | None:
+        row = self.db.execute(
+            "SELECT MAX(scheduled_at) AS scheduled_at FROM research_cycles WHERE observation_class = ?",
+            (observation_class,),
+        ).fetchone()
+        return datetime.fromisoformat(row["scheduled_at"]) if row and row["scheduled_at"] else None
