@@ -107,6 +107,38 @@ def account_for_downtime(runner: CycleRunner, detected_at: datetime) -> list[dat
     return rejected
 
 
+def reject_cycle(runner: CycleRunner, boundary: datetime, reason: str,
+                 error: Exception | None = None) -> None:
+    observation_class = runner.observation_class()
+    cycle_id = str(uuid5(
+        NAMESPACE_URL, f"cycle:{observation_class.value}:{boundary.isoformat()}"
+    ))
+    existing = runner.repository.begin_cycle(cycle_id, boundary, observation_class.value)
+    if existing is not None:
+        return
+    details = {"reason": reason, "scoreable": False}
+    if error is not None:
+        details["error"] = repr(error)
+    runner.repository.finish_cycle(cycle_id, "REJECTED", None, details)
+    runner.repository.health("cycle", "REJECTED", {"scheduled_at": boundary, **details})
+
+
+def run_scheduled_boundary(runner: CycleRunner, collector: MarketDataCollector,
+                           boundary: datetime) -> DecisionSnapshot | None:
+    """Run one boundary without allowing transient collection failure to kill the scheduler."""
+    try:
+        collector.collect_incremental(observation_class=runner.observation_class())
+        collector.recover_gaps(boundary)
+    except Exception as exc:
+        reject_cycle(runner, boundary, "COLLECTION_FAILED", exc)
+        runner.repository.health(
+            "scheduler", "BOUNDARY_REJECTED",
+            {"scheduled_at": boundary, "reason": "COLLECTION_FAILED", "error": repr(exc)},
+        )
+        return None
+    return runner.run(boundary, available_at=datetime.now(UTC))
+
+
 async def schedule_forever(runner: CycleRunner, collector: MarketDataCollector,
                            websocket: ResilientWebsocketCollector, *, grace_seconds: int = 5) -> None:
     account_for_downtime(runner, datetime.now(UTC))
@@ -118,9 +150,7 @@ async def schedule_forever(runner: CycleRunner, collector: MarketDataCollector,
             boundary = next_quarter_hour(datetime.now(UTC))
             delay = max(0.0, (boundary - datetime.now(UTC)).total_seconds() + grace_seconds)
             await asyncio.sleep(delay)
-            collector.collect_incremental(observation_class=runner.observation_class())
-            collector.recover_gaps(boundary)
-            runner.run(boundary, available_at=datetime.now(UTC))
+            run_scheduled_boundary(runner, collector, boundary)
     finally:
         stop.set()
         thread.join(timeout=10)

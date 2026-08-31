@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from hype_autopilot.config import load_yaml
-from hype_autopilot.operations import CycleRunner, account_for_downtime
+from hype_autopilot.operations import CycleRunner, account_for_downtime, run_scheduled_boundary
 from hype_autopilot.simulation.engine import PaperSimulator
 from hype_autopilot.snapshots.builder import SnapshotBuilder
 from tests.helpers import memory_repo, populate_scoreable
@@ -43,3 +43,27 @@ def test_process_downtime_is_persisted_as_rejected_cycles():
     assert all("PROCESS_DOWNTIME" in row["details_json"] for row in rows[1:])
 
     assert account_for_downtime(runner, at + timedelta(minutes=31)) == []
+
+
+def test_collection_failure_rejects_boundary_without_raising():
+    runner, repo, at = _runner()
+
+    class FailingCollector:
+        def collect_incremental(self, **_kwargs):
+            raise ConnectionError("temporary DNS failure")
+
+        def recover_gaps(self, _boundary):
+            raise AssertionError("recovery must not run after collection failure")
+
+    assert run_scheduled_boundary(runner, FailingCollector(), at) is None
+    row = repo.db.execute(
+        "SELECT status, snapshot_hash, details_json FROM research_cycles WHERE scheduled_at = ?",
+        (at.isoformat(),),
+    ).fetchone()
+    assert row["status"] == "REJECTED"
+    assert row["snapshot_hash"] is None
+    assert "COLLECTION_FAILED" in row["details_json"]
+    health = repo.db.execute(
+        "SELECT status, details_json FROM health_events WHERE component = 'scheduler'"
+    ).fetchone()
+    assert health["status"] == "BOUNDARY_REJECTED"
