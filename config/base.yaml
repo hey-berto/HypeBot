@@ -1,0 +1,35 @@
+symbols:
+  hype: HYPE
+  btc: BTC
+hyperliquid:
+  base_url: https://api.hyperliquid.xyz
+  candle_intervals:
+    HYPE: [1m, 5m, 15m, 1h, 4h]
+    BTC: [15m, 1h, 4h]
+freshness_seconds:
+  hype_1m: 120
+  hype_5m: 600
+  hype_15m: 1200
+  hype_1h: 4500
+  hype_4h: 18000
+  btc_15m: 1200
+  btc_1h: 4500
+  btc_4h: 18000
+  hype_context: 120
+  hype_funding: 4500
+  hype_bbo: 120
+required_sources:
+  - hype_1m
+  - hype_5m
+  - hype_15m
+  - hype_1h
+  - hype_4h
+  - btc_15m
+  - btc_1h
+  - btc_4h
+  - hype_context
+  - hype_funding
+optional_sources:
+  - hype_bbo
+storage:
+  sqlite_path: data/hype_autopilot.sqlite3

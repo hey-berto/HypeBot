@@ -1,0 +1,2 @@
+"""Canonical immutable decision snapshots."""
+

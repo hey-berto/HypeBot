@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hype-autopilot"
+version = "0.1.0"
+description = "Causal HYPE market-research and paper-simulation prototype"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "hyperliquid-python-sdk>=0.18.0",
+  "pydantic>=2.8,<3",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "pytest-cov>=5.0"]
+
+[project.scripts]
+hype-autopilot = "hype_autopilot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hype_autopilot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+

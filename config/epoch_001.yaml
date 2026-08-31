@@ -1,0 +1,42 @@
+epoch_id: epoch_001
+status: DRAFT
+snapshot_schema_version: 1.0.0
+feature_schema_version: 1.0.0
+regime_version: REGIME_V1
+quant_trend_version: QUANT_TREND_V1
+quant_mean_reversion_version: QUANT_MR_V1
+detector_version: SETUP_DETECTOR_V1
+simulator_version: SIMULATOR_V1
+decision_cadence_minutes: 15
+regime:
+  trend:
+    ema_fast: 20
+    ema_slow: 50
+    slope_lag_hours: 6
+  volatility:
+    atr_period: 14
+    trailing_observations: 1440
+    minimum_observations: 720
+    low_percentile: 0.25
+    high_percentile: 0.75
+funding:
+  zscore_observations: 168
+  minimum_observations: 72
+quant_trend:
+  donchian_lookback_1h: 20
+  atr_period_1h: 14
+  stop_atr_multiple: 3.0
+  ttl_minutes: 2880
+quant_mean_reversion:
+  funding_zscore_short: 2.0
+  funding_zscore_long: -2.0
+  rsi_short: 70.0
+  rsi_long: 30.0
+  stop_atr_multiple: 2.0
+  ttl_minutes: 720
+simulator:
+  signal_to_entry_latency_seconds: 3
+  taker_fee_bps_per_side: 4.5
+  slippage_bps_per_side: 2.0
+  same_bar_resolution: ADVERSE_FIRST
+

@@ -1,0 +1,2 @@
+"""Shared paper execution simulator."""
+

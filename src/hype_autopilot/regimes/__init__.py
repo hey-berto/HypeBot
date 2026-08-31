@@ -1,0 +1,2 @@
+"""Frozen causal regime taxonomy."""
+
