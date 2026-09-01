@@ -1,0 +1,49 @@
+phase2_epoch_id: phase2_epoch_001
+status: DRAFT_BUILD_ONLY
+evidence_collection_enabled: false
+activation_authorized: false
+schedule_minutes: 15
+database_path: data/phase2/phase2_epoch_001.sqlite3
+snapshot_schema_version: 1.0.0
+feature_schema_version: 1.0.0
+quant_trend_version: QUANT_TREND_V1
+quant_mean_reversion_version: QUANT_MR_V1
+detector_version: SETUP_DETECTOR_V1
+regime_version: REGIME_V1
+llm_strategy_version: LLM_V1
+provider: openai
+model: gpt-5.6-terra
+model_version: gpt-5.6-terra
+reasoning_effort: medium
+prompt_version: LLM_PROMPT_V1
+prompt_path: prompts/phase2/llm_v1.txt
+output_schema_version: LLM_OUTPUT_V1
+hybrid_trend_version: HYBRID_TREND_LLM_V1
+hybrid_mr_version: HYBRID_MR_LLM_V1
+hybrid_trend_designation: PRIMARY_CONFIRMATORY
+hybrid_mr_designation: EXPLORATORY
+llm_vs_quant_trend_designation: CONFIRMATORY
+llm_vs_quant_mr_designation: CONFIRMATORY
+simulator_version: SIMULATOR_V1
+llm_geometry_adapter_version: LLM_GEOMETRY_ADAPTER_V1
+snapshot_to_call_staleness_seconds: 120
+malformed_output_max_retries: 1
+request_timeout_seconds: 60
+tools_allowed: false
+input_cost_per_million_usd: 2.0
+cached_input_cost_per_million_usd: 0.2
+output_cost_per_million_usd: 12.0
+resource_isolation:
+  max_concurrent_llm_calls: 1
+  max_process_memory_mb: 1024
+  max_database_size_mb: 4096
+  process_nice_increment: 10
+  api_budget_usd_per_day: 10.0
+information_boundary:
+  snapshot_only: true
+  web_browsing: false
+  tools: false
+  live_search: false
+  external_market_lookup: false
+  connectors: false
+  post_snapshot_data: false
