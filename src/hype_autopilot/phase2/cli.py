@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 
 from hype_autopilot.hashing import sha256_canonical
+from hype_autopilot.phase2.acceptance import (
+    run_real_provider_canary,
+    run_scheduler_acceptance,
+)
 from hype_autopilot.phase2.config import (
     file_sha256,
     load_phase2_config,
@@ -44,15 +48,28 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Phase 2 build-only validation commands"
     )
-    parser.add_argument("command", choices=["build-status"])
+    parser.add_argument(
+        "command",
+        choices=["build-status", "non-scored-canary", "scheduler-acceptance"],
+    )
     parser.add_argument(
         "--config", type=Path, default=Path("config/phase2/phase2_epoch_001.yaml")
     )
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--database", type=Path)
     args = parser.parse_args()
     if args.command == "build-status":
-        print(
-            json.dumps(
-                build_status(args.config, args.workspace), indent=2, sort_keys=True
-            )
+        result = build_status(args.config, args.workspace)
+    elif args.command == "non-scored-canary":
+        result = run_real_provider_canary(
+            workspace=args.workspace,
+            database_path=args.database
+            or Path("data/phase2/non_scored_canary.sqlite3"),
         )
+    else:
+        result = run_scheduler_acceptance(
+            workspace=args.workspace,
+            database_path=args.database
+            or Path("data/phase2/scheduler_acceptance.sqlite3"),
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
