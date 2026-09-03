@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -139,6 +139,20 @@ class LLMStructuredOutput(BaseModel):
                 "trade decisions require entry, stop, invalidation, and TTL"
             )
         return self
+
+
+class LLMStructuredOutputV2(LLMStructuredOutput):
+    """Versioned transport contract with an API-enforced schema identity."""
+
+    output_schema_version: Literal["LLM_OUTPUT_V2"]
+
+
+def structured_output_model(version: str) -> type[LLMStructuredOutput]:
+    if version == "LLM_OUTPUT_V1":
+        return LLMStructuredOutput
+    if version == "LLM_OUTPUT_V2":
+        return LLMStructuredOutputV2
+    raise ValueError(f"unsupported Phase 2 output schema version: {version}")
 
 
 class ProviderResponse(BaseModel):

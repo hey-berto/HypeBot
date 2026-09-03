@@ -133,7 +133,9 @@ def build_phase2_runtime(
         git_commit_hash=git_commit_hash,
         config_hash=digest,
         prompt_hash=file_sha256(prompt_path),
-        output_schema_hash=sha256_canonical(output_json_schema()),
+        output_schema_hash=sha256_canonical(
+            output_json_schema(config.output_schema_version)
+        ),
         database_schema_hash=phase2_database_schema_hash(),
     )
     return Phase2Runtime(

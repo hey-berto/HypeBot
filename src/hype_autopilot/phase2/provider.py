@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from hype_autopilot.phase2.config import Phase2Config
 from hype_autopilot.phase2.credentials import load_phase2_openai_environment
-from hype_autopilot.phase2.models import LLMStructuredOutput, ProviderResponse
+from hype_autopilot.phase2.models import ProviderResponse, structured_output_model
 
 
 class ProviderError(RuntimeError):
@@ -27,8 +27,10 @@ class LLMProvider(Protocol):
     ) -> ProviderResponse: ...
 
 
-def output_json_schema() -> dict[str, Any]:
-    schema = LLMStructuredOutput.model_json_schema()
+def output_json_schema(
+    output_schema_version: str = "LLM_OUTPUT_V1",
+) -> dict[str, Any]:
+    schema = structured_output_model(output_schema_version).model_json_schema()
 
     def strict(node: Any) -> None:
         if isinstance(node, dict):
@@ -55,6 +57,7 @@ class OpenAIResponsesProvider:
     input_cost_per_million_usd: float
     cached_input_cost_per_million_usd: float
     output_cost_per_million_usd: float
+    output_schema_version: str = "LLM_OUTPUT_V1"
     api_key_env: str = "OPENAI_API_KEY"
     endpoint: str = "https://api.openai.com/v1/responses"
 
@@ -77,9 +80,13 @@ class OpenAIResponsesProvider:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "llm_v1_decision",
+                    "name": (
+                        "llm_v1_decision"
+                        if self.output_schema_version == "LLM_OUTPUT_V1"
+                        else "llm_v2_decision"
+                    ),
                     "strict": True,
-                    "schema": output_json_schema(),
+                    "schema": output_json_schema(self.output_schema_version),
                 }
             },
         }
@@ -159,4 +166,5 @@ def openai_provider_from_config(
         input_cost_per_million_usd=config.input_cost_per_million_usd,
         cached_input_cost_per_million_usd=config.cached_input_cost_per_million_usd,
         output_cost_per_million_usd=config.output_cost_per_million_usd,
+        output_schema_version=config.output_schema_version,
     )

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from hype_autopilot.data.models import AssetContext
 from hype_autopilot.features.models import FeatureSet
@@ -18,6 +19,7 @@ from hype_autopilot.phase2.manifest import build_activation_manifest
 from hype_autopilot.phase2.models import (
     FailClosedReason,
     LLMStructuredOutput,
+    LLMStructuredOutputV2,
     ProviderResponse,
     RunnerStatus,
 )
@@ -39,6 +41,7 @@ from hype_autopilot.strategies.base import Decision
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 CONFIG_PATH = WORKSPACE / "config/phase2/phase2_epoch_001.yaml"
+CONFIG_V2_PATH = WORKSPACE / "config/phase2/phase2_epoch_002.yaml"
 
 
 def phase2_snapshot(*, scoreable: bool = True) -> DecisionSnapshot:
@@ -130,9 +133,11 @@ class FakeProvider:
 
 
 def make_runner(
-    snapshot: DecisionSnapshot, results: list[object]
+    snapshot: DecisionSnapshot,
+    results: list[object],
+    config_path: Path = CONFIG_PATH,
 ) -> tuple[FailClosedLLMRunner, Phase2Repository, FakeProvider]:
-    config, _ = load_phase2_config(CONFIG_PATH)
+    config, _ = load_phase2_config(config_path)
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
@@ -291,6 +296,40 @@ def test_openai_output_schema_is_recursively_strict():
                 verify(value)
 
     verify(schema)
+
+
+def test_v2_schema_constrains_version_at_provider_boundary():
+    schema = output_json_schema("LLM_OUTPUT_V2")
+    assert schema["properties"]["output_schema_version"] == {
+        "const": "LLM_OUTPUT_V2",
+        "title": "Output Schema Version",
+        "type": "string",
+    }
+    with pytest.raises(ValidationError):
+        LLMStructuredOutputV2.model_validate_json(
+            valid_output("a" * 64, output_schema_version="OTHER")
+        )
+
+
+def test_v2_runner_rejects_wrong_version_in_schema_and_accepts_literal():
+    snapshot = phase2_snapshot()
+    invalid = valid_output(snapshot.snapshot_hash, output_schema_version="OTHER")
+    runner, _, provider = make_runner(
+        snapshot, [invalid, invalid], config_path=CONFIG_V2_PATH
+    )
+    rejected = runner.evaluate(snapshot)
+    assert rejected.reason_code == FailClosedReason.RETRY_EXHAUSTED
+    assert rejected.metadata["terminal_cause"] == FailClosedReason.INVALID_SCHEMA.value
+    assert provider.calls == 2
+
+    snapshot = snapshot.model_copy(update={"snapshot_id": "phase2-v2-valid"})
+    snapshot = freeze_snapshot(snapshot.model_copy(update={"snapshot_hash": None}))
+    valid = valid_output(snapshot.snapshot_hash, output_schema_version="LLM_OUTPUT_V2")
+    runner, _, provider = make_runner(snapshot, [valid], config_path=CONFIG_V2_PATH)
+    accepted = runner.evaluate(snapshot)
+    assert accepted.runner_status == RunnerStatus.VALID
+    assert accepted.output_schema_version == "LLM_OUTPUT_V2"
+    assert provider.calls == 1
 
 
 @pytest.mark.parametrize(

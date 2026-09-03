@@ -35,7 +35,9 @@ def build_status(config_path: Path, workspace: Path) -> dict[str, object]:
         "model": config.model,
         "model_version": config.model_version,
         "output_schema_version": config.output_schema_version,
-        "output_schema_hash": sha256_canonical(output_json_schema()),
+        "output_schema_hash": sha256_canonical(
+            output_json_schema(config.output_schema_version)
+        ),
         "database_schema_hash": phase2_database_schema_hash(),
         "evidence_collection_enabled": config.evidence_collection_enabled,
         "activation_authorized": config.activation_authorized,
@@ -63,12 +65,14 @@ def main() -> None:
     elif args.command == "non-scored-canary":
         result = run_real_provider_canary(
             workspace=args.workspace,
+            config_path=args.config,
             database_path=args.database
             or Path("data/phase2/non_scored_canary.sqlite3"),
         )
     else:
         result = run_scheduler_acceptance(
             workspace=args.workspace,
+            config_path=args.config,
             database_path=args.database
             or Path("data/phase2/scheduler_acceptance.sqlite3"),
         )

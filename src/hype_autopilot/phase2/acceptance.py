@@ -43,8 +43,25 @@ NON_SCORED_CANARY = "NON_SCORED_CANARY"
 NON_SCORED_SCHEDULER_ACCEPTANCE = "NON_SCORED_SCHEDULER_ACCEPTANCE"
 
 
+class _CapturingProvider:
+    def __init__(self, provider: object) -> None:
+        self.provider = provider
+        self.raw_outputs: list[str] = []
+
+    def invoke(
+        self, *, prompt: str, snapshot_json: str, timeout_seconds: int
+    ) -> ProviderResponse:
+        response = self.provider.invoke(
+            prompt=prompt,
+            snapshot_json=snapshot_json,
+            timeout_seconds=timeout_seconds,
+        )
+        self.raw_outputs.append(response.raw_output)
+        return response
+
+
 def synthetic_acceptance_snapshot(
-    at: datetime, *, snapshot_id: str
+    at: datetime, *, snapshot_id: str, epoch_id: str = "phase2_epoch_001"
 ) -> DecisionSnapshot:
     at = at.astimezone(UTC)
     context = AssetContext(
@@ -63,7 +80,7 @@ def synthetic_acceptance_snapshot(
             snapshot_id=snapshot_id,
             snapshot_timestamp=at,
             created_at=at,
-            epoch_id="phase2_epoch_001",
+            epoch_id=epoch_id,
             observation_class=ObservationClass.SCORED_PROSPECTIVE,
             market=MarketSnapshot(
                 hype_context=context,
@@ -106,25 +123,33 @@ def _git_head(workspace: Path) -> str:
 
 
 def run_real_provider_canary(
-    *, workspace: str | Path, database_path: str | Path
+    *,
+    workspace: str | Path,
+    database_path: str | Path,
+    config_path: str | Path = "config/phase2/phase2_epoch_001.yaml",
 ) -> dict[str, Any]:
     """Make one real, permanently non-scored structured-output call."""
     root = Path(workspace).resolve()
-    config_path = root / "config/phase2/phase2_epoch_001.yaml"
-    config, config_hash = load_phase2_config(config_path)
+    resolved_config = resolve_inside_workspace(config_path, root)
+    config, config_hash = load_phase2_config(resolved_config)
     config.assert_build_only()
     database = resolve_inside_workspace(database_path, root)
     repository = _new_acceptance_repository(database, root)
     at = datetime.now(UTC)
     snapshot = synthetic_acceptance_snapshot(
-        at, snapshot_id="non-scored-real-provider-canary"
+        at,
+        snapshot_id=f"non-scored-real-provider-canary-{database.stem}",
+        epoch_id=config.phase2_epoch_id,
     )
     repository.core.save_snapshot(snapshot)
     prompt_path = resolve_inside_workspace(config.prompt_path, root)
     prompt = prompt_path.read_text(encoding="utf-8")
+    provider = _CapturingProvider(
+        openai_provider_from_config(config, workspace_root=str(root))
+    )
     runner = FailClosedLLMRunner(
         config=config,
-        provider=openai_provider_from_config(config, workspace_root=str(root)),
+        provider=provider,
         repository=repository,
         prompt=prompt,
         experiment_id=NON_SCORED_CANARY,
@@ -141,7 +166,10 @@ def run_real_provider_canary(
         "source_commit": _git_head(root),
         "config_hash": config_hash,
         "prompt_hash": file_sha256(prompt_path),
-        "output_schema_hash": sha256_canonical(output_json_schema()),
+        "output_schema_hash": sha256_canonical(
+            output_json_schema(config.output_schema_version)
+        ),
+        "raw_outputs": provider.raw_outputs,
         "database_schema_hash": phase2_database_schema_hash(),
         "snapshot_hash": snapshot.snapshot_hash,
         "model": record.model,
@@ -207,19 +235,25 @@ class _SyntheticCollector:
 
 
 class _SyntheticBuilder:
-    def __init__(self, clock: _AcceptanceClock) -> None:
+    def __init__(
+        self, clock: _AcceptanceClock, epoch_id: str = "phase2_epoch_001"
+    ) -> None:
         self.clock = clock
+        self.epoch_id = epoch_id
 
     def build(self, boundary: datetime, *, observation_class: str) -> DecisionSnapshot:
         self.clock.value = boundary + timedelta(seconds=5)
         return synthetic_acceptance_snapshot(
-            boundary, snapshot_id=f"scheduler-acceptance-{boundary.isoformat()}"
+            boundary,
+            snapshot_id=f"scheduler-acceptance-{boundary.isoformat()}",
+            epoch_id=self.epoch_id,
         )
 
 
 class _TwoBoundaryProvider:
-    def __init__(self) -> None:
+    def __init__(self, output_schema_version: str) -> None:
         self.calls = 0
+        self.output_schema_version = output_schema_version
 
     def invoke(
         self, *, prompt: str, snapshot_json: str, timeout_seconds: int
@@ -231,7 +265,7 @@ class _TwoBoundaryProvider:
             raise ProviderTimeout("injected acceptance timeout")
         raw = {
             "input_snapshot_hash": snapshot["snapshot_hash"],
-            "output_schema_version": "LLM_OUTPUT_V1",
+            "output_schema_version": self.output_schema_version,
             "decision": "NO_TRADE",
             "confidence": "LOW",
             "rationale_tags": ["scheduler-recovery-acceptance"],
@@ -260,12 +294,15 @@ class _TwoBoundaryProvider:
 
 
 def run_scheduler_acceptance(
-    *, workspace: str | Path, database_path: str | Path
+    *,
+    workspace: str | Path,
+    database_path: str | Path,
+    config_path: str | Path = "config/phase2/phase2_epoch_001.yaml",
 ) -> dict[str, Any]:
     """Exercise actual boundary orchestration in an isolated non-scored database."""
     root = Path(workspace).resolve()
-    config_path = root / "config/phase2/phase2_epoch_001.yaml"
-    frozen_config, config_hash = load_phase2_config(config_path)
+    resolved_config = resolve_inside_workspace(config_path, root)
+    frozen_config, config_hash = load_phase2_config(resolved_config)
     frozen_config.assert_build_only()
     config = frozen_config.model_copy(
         update={"evidence_collection_enabled": True, "activation_authorized": True}
@@ -274,7 +311,7 @@ def run_scheduler_acceptance(
     repository = _new_acceptance_repository(database, root)
     prompt_path = resolve_inside_workspace(config.prompt_path, root)
     prompt_hash = file_sha256(prompt_path)
-    schema_hash = sha256_canonical(output_json_schema())
+    schema_hash = sha256_canonical(output_json_schema(config.output_schema_version))
     db_schema_hash = phase2_database_schema_hash()
     commit = _git_head(root)
     first_boundary = planned_phase2_boundary(datetime(2026, 9, 2, 0, 7, 30, tzinfo=UTC))
@@ -293,13 +330,13 @@ def run_scheduler_acceptance(
     repository.save_manifest(manifest)
     clock = _AcceptanceClock(first_boundary + timedelta(seconds=5))
     collector = _SyntheticCollector()
-    provider = _TwoBoundaryProvider()
+    provider = _TwoBoundaryProvider(config.output_schema_version)
 
     def build_pipeline() -> Phase2Pipeline:
         return Phase2Pipeline(
             config=config,
             repository=repository,
-            builder=_SyntheticBuilder(clock),
+            builder=_SyntheticBuilder(clock, config.phase2_epoch_id),
             collector=collector,
             llm_runner=FailClosedLLMRunner(
                 config=config,

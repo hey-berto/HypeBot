@@ -16,6 +16,7 @@ from hype_autopilot.phase2.models import (
     LLMDecisionRecord,
     LLMStructuredOutput,
     RunnerStatus,
+    structured_output_model,
 )
 from hype_autopilot.phase2.provider import LLMProvider, ProviderError, ProviderTimeout
 from hype_autopilot.phase2.resources import Phase2ResourceGuard, ResourceBudgetExceeded
@@ -281,7 +282,9 @@ class FailClosedLLMRunner:
                     metadata={"terminal_cause": FailClosedReason.MALFORMED_JSON.value},
                 )
             try:
-                output = LLMStructuredOutput.model_validate(raw)
+                output = structured_output_model(
+                    self.config.output_schema_version
+                ).model_validate(raw)
             except ValidationError:
                 self._save_attempt(
                     frozen,
