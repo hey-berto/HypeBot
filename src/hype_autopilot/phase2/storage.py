@@ -23,7 +23,15 @@ CREATE TABLE IF NOT EXISTS llm_invocation_attempts (
   input_snapshot_hash TEXT NOT NULL REFERENCES decision_snapshots(snapshot_hash),
   attempt INTEGER NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
   provider_status TEXT NOT NULL, error_code TEXT, tool_calls_count INTEGER NOT NULL,
-  raw_output_hash TEXT, payload_json TEXT NOT NULL, integrity_hash TEXT NOT NULL UNIQUE,
+  raw_output_hash TEXT, raw_output_plaintext TEXT,
+  raw_capture_status TEXT NOT NULL CHECK (
+    raw_capture_status IN ('NOT_AVAILABLE', 'CAPTURED', 'WITHHELD_SENSITIVE')
+  ),
+  payload_json TEXT NOT NULL, integrity_hash TEXT NOT NULL UNIQUE,
+  CHECK (
+    (raw_capture_status = 'CAPTURED' AND raw_output_plaintext IS NOT NULL AND raw_output_hash IS NOT NULL)
+    OR (raw_capture_status != 'CAPTURED' AND raw_output_plaintext IS NULL)
+  ),
   UNIQUE(experiment_id, phase2_epoch_id, input_snapshot_hash, attempt)
 );
 CREATE TABLE IF NOT EXISTS llm_decisions (
@@ -110,7 +118,11 @@ class Phase2Repository:
         attempt_id = str(uuid5(NAMESPACE_URL, f"phase2-attempt:{integrity}"))
         try:
             self.db.execute(
-                "INSERT INTO llm_invocation_attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO llm_invocation_attempts "
+                "(attempt_id, experiment_id, phase2_epoch_id, input_snapshot_hash, attempt, "
+                "started_at, ended_at, provider_status, error_code, tool_calls_count, "
+                "raw_output_hash, raw_output_plaintext, raw_capture_status, payload_json, "
+                "integrity_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     attempt_id,
                     attempt.experiment_id,
@@ -123,6 +135,8 @@ class Phase2Repository:
                     attempt.error_code,
                     attempt.tool_calls_count,
                     attempt.raw_output_hash,
+                    attempt.raw_output_plaintext,
+                    attempt.raw_capture_status,
                     payload,
                     integrity,
                 ),

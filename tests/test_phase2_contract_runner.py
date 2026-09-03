@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from hype_autopilot.data.models import AssetContext
+from hype_autopilot.data.models import AssetContext, ObservationClass
 from hype_autopilot.features.models import FeatureSet
 from hype_autopilot.phase2.config import ACTIVATION_PHRASE, load_phase2_config
 from hype_autopilot.phase2.isolation import (
@@ -278,6 +279,58 @@ def test_valid_runner_persists_exact_lineage_and_is_idempotent():
     assert adapted.decision == Decision.LONG
     assert adapted.stop_reference == 95 and adapted.target_reference == 110
     assert adapted.created_at == first.request_ended_at
+
+
+def test_scored_attempt_persists_exact_raw_plaintext_hash_and_audit_status():
+    snapshot = phase2_snapshot().model_copy(
+        update={"observation_class": ObservationClass.SCORED_PROSPECTIVE}
+    )
+    snapshot = freeze_snapshot(snapshot.model_copy(update={"snapshot_hash": None}))
+    raw_output = valid_output(snapshot.snapshot_hash)
+    runner, repository, _ = make_runner(snapshot, [raw_output])
+
+    record = runner.evaluate(snapshot)
+
+    assert record.runner_status == RunnerStatus.VALID
+    row = repository.db.execute(
+        "SELECT raw_output_plaintext, raw_output_hash, raw_capture_status, "
+        "payload_json FROM llm_invocation_attempts"
+    ).fetchone()
+    assert row["raw_output_plaintext"] == raw_output
+    assert row["raw_output_hash"] == sha256(raw_output.encode("utf-8")).hexdigest()
+    assert row["raw_capture_status"] == "CAPTURED"
+    assert json.loads(row["payload_json"])["raw_output_plaintext"] == raw_output
+    with pytest.raises(sqlite3.DatabaseError):
+        repository.db.execute(
+            "UPDATE llm_invocation_attempts SET raw_output_plaintext='changed'"
+        )
+
+
+def test_sensitive_credential_material_is_withheld_and_fails_closed(monkeypatch):
+    snapshot = phase2_snapshot().model_copy(
+        update={"observation_class": ObservationClass.SCORED_PROSPECTIVE}
+    )
+    snapshot = freeze_snapshot(snapshot.model_copy(update={"snapshot_hash": None}))
+    secret = "sk-proj-sensitive-test-material-1234567890"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    raw_output = json.dumps({"unexpected": secret})
+    runner, repository, provider = make_runner(snapshot, [raw_output])
+
+    record = runner.evaluate(snapshot)
+
+    assert provider.calls == 1
+    assert record.runner_status == RunnerStatus.FAIL_CLOSED
+    assert record.reason_code == FailClosedReason.SENSITIVE_CREDENTIAL_MATERIAL
+    row = repository.db.execute(
+        "SELECT raw_output_plaintext, raw_output_hash, raw_capture_status, "
+        "error_code, payload_json FROM llm_invocation_attempts"
+    ).fetchone()
+    assert row["raw_output_plaintext"] is None
+    assert row["raw_output_hash"] == sha256(raw_output.encode("utf-8")).hexdigest()
+    assert row["raw_capture_status"] == "WITHHELD_SENSITIVE"
+    assert row["error_code"] == FailClosedReason.SENSITIVE_CREDENTIAL_MATERIAL
+    assert secret not in row["payload_json"]
+    assert secret not in "\n".join(repository.db.iterdump())
 
 
 def test_openai_output_schema_is_recursively_strict():

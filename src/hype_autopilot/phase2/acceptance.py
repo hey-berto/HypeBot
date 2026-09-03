@@ -157,7 +157,8 @@ def run_real_provider_canary(
     record = runner.evaluate(snapshot)
     attempts = repository.db.execute(
         "SELECT experiment_id, provider_status, error_code, tool_calls_count, "
-        "started_at, ended_at, raw_output_hash FROM llm_invocation_attempts ORDER BY attempt"
+        "started_at, ended_at, raw_output_hash, raw_output_plaintext, "
+        "raw_capture_status FROM llm_invocation_attempts ORDER BY attempt"
     ).fetchall()
     integrity, foreign_keys = repository.integrity()
     return {

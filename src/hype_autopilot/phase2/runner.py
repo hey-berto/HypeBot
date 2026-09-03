@@ -8,6 +8,10 @@ from hashlib import sha256
 from pydantic import ValidationError
 
 from hype_autopilot.hashing import canonical_json
+from hype_autopilot.phase2.audit import (
+    SensitiveCredentialMaterial,
+    validate_raw_provider_plaintext,
+)
 from hype_autopilot.phase2.config import Phase2Config
 from hype_autopilot.phase2.models import (
     EntryMode,
@@ -191,6 +195,12 @@ class FailClosedLLMRunner:
                 )
 
             raw_hash = sha256(response.raw_output.encode("utf-8")).hexdigest()
+            try:
+                raw_plaintext = validate_raw_provider_plaintext(response.raw_output)
+                raw_capture_status = "CAPTURED"
+            except SensitiveCredentialMaterial:
+                raw_plaintext = None
+                raw_capture_status = "WITHHELD_SENSITIVE"
             age = max(
                 0.0,
                 (
@@ -207,10 +217,33 @@ class FailClosedLLMRunner:
                     FailClosedReason.TOOL_INTEGRITY_VIOLATION.value,
                     response.tool_calls_count,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
                     FailClosedReason.TOOL_INTEGRITY_VIOLATION,
+                    age=age,
+                    response=response,
+                    retry_count=attempt_number - 1,
+                )
+            if raw_capture_status == "WITHHELD_SENSITIVE":
+                reason = FailClosedReason.SENSITIVE_CREDENTIAL_MATERIAL
+                self._save_attempt(
+                    frozen,
+                    attempt_number,
+                    response.request_started_at,
+                    response.request_ended_at,
+                    "REJECTED",
+                    reason.value,
+                    0,
+                    raw_hash,
+                    None,
+                    raw_capture_status,
+                )
+                return self._persist_fail_closed(
+                    frozen,
+                    reason,
                     age=age,
                     response=response,
                     retry_count=attempt_number - 1,
@@ -229,6 +262,8 @@ class FailClosedLLMRunner:
                     FailClosedReason.STALE_SNAPSHOT.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -250,6 +285,8 @@ class FailClosedLLMRunner:
                     FailClosedReason.API_MODEL_ERROR.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -270,6 +307,8 @@ class FailClosedLLMRunner:
                     FailClosedReason.MALFORMED_JSON.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 if attempt_number < max_attempts:
                     continue
@@ -295,6 +334,8 @@ class FailClosedLLMRunner:
                     FailClosedReason.INVALID_SCHEMA.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 if attempt_number < max_attempts:
                     continue
@@ -317,6 +358,8 @@ class FailClosedLLMRunner:
                     reason.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -336,6 +379,8 @@ class FailClosedLLMRunner:
                     reason.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -357,6 +402,8 @@ class FailClosedLLMRunner:
                     reason.value,
                     0,
                     raw_hash,
+                    raw_plaintext,
+                    raw_capture_status,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -374,6 +421,8 @@ class FailClosedLLMRunner:
                 None,
                 0,
                 raw_hash,
+                raw_plaintext,
+                raw_capture_status,
             )
             record = LLMDecisionRecord(
                 experiment_id=self.experiment_id,
@@ -440,6 +489,8 @@ class FailClosedLLMRunner:
         error_code: str | None,
         tool_calls_count: int,
         raw_output_hash: str | None,
+        raw_output_plaintext: str | None = None,
+        raw_capture_status: str = "NOT_AVAILABLE",
     ) -> None:
         assert snapshot.snapshot_hash is not None
         self.repository.save_attempt(
@@ -451,6 +502,8 @@ class FailClosedLLMRunner:
                 started_at=started,
                 ended_at=ended,
                 raw_output_hash=raw_output_hash,
+                raw_output_plaintext=raw_output_plaintext,
+                raw_capture_status=raw_capture_status,
                 provider_status=provider_status,
                 error_code=error_code,
                 tool_calls_count=tool_calls_count,

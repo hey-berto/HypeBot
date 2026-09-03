@@ -3,10 +3,12 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from hype_autopilot.phase2.audit import validate_raw_provider_plaintext
 from hype_autopilot.strategies.base import Decision
 
 
@@ -43,6 +45,7 @@ class FailClosedReason(StrEnum):
     RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
     INFORMATION_BOUNDARY_VIOLATION = "INFORMATION_BOUNDARY_VIOLATION"
     RESOURCE_BUDGET_EXCEEDED = "RESOURCE_BUDGET_EXCEEDED"
+    SENSITIVE_CREDENTIAL_MATERIAL = "SENSITIVE_CREDENTIAL_MATERIAL"
 
 
 class PriceGeometry(BaseModel):
@@ -178,9 +181,28 @@ class InvocationAttempt(BaseModel):
     started_at: datetime
     ended_at: datetime
     raw_output_hash: str | None = None
+    raw_output_plaintext: str | None = None
+    raw_capture_status: Literal["NOT_AVAILABLE", "CAPTURED", "WITHHELD_SENSITIVE"] = (
+        "NOT_AVAILABLE"
+    )
     provider_status: str
     error_code: str | None = None
     tool_calls_count: int = 0
+
+    @model_validator(mode="after")
+    def validate_raw_audit_capture(self) -> InvocationAttempt:
+        if self.raw_capture_status == "CAPTURED":
+            if self.raw_output_plaintext is None or self.raw_output_hash is None:
+                raise ValueError("captured raw output requires plaintext and SHA-256")
+            validate_raw_provider_plaintext(self.raw_output_plaintext)
+            if (
+                sha256(self.raw_output_plaintext.encode("utf-8")).hexdigest()
+                != self.raw_output_hash
+            ):
+                raise ValueError("raw provider plaintext/hash mismatch")
+        elif self.raw_output_plaintext is not None:
+            raise ValueError("uncaptured raw output must not retain plaintext")
+        return self
 
 
 class LLMDecisionRecord(BaseModel):
