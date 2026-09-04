@@ -1,0 +1,51 @@
+gate_version: PHASE3_ANALYSIS_GATE_V1
+phase2_epoch_id: phase2_epoch_002
+activation_timestamp: 2026-09-04T03:45:34.014109Z
+calendar_floor_days: 42
+earliest_formal_checkpoint: 2026-10-16T03:45:34.014109Z
+bootstrap:
+  library: arch.bootstrap
+  method: stationary
+  block_length: automatic_per_paired_series
+  resamples: 10000
+  confidence_level: 0.90
+ess:
+  minimum_confirmatory: 20
+  cutoff: first_lag_abs_acf_below_2_over_sqrt_n
+regime:
+  minimum_distinct_trend_states: 2
+  minimum_distinct_volatility_states: 2
+  minimum_coeligible_per_robustness_bucket: 5
+  favorable_bucket_fraction_strictly_greater_than: 0.50
+comparisons:
+  LLM_V1__vs__QUANT_TREND_V1:
+    treatment: LLM_V1
+    control: QUANT_TREND_V1
+    designation: CONFIRMATORY
+    minimum_coeligible: 60
+  LLM_V1__vs__QUANT_MR_V1:
+    treatment: LLM_V1
+    control: QUANT_MR_V1
+    designation: CONFIRMATORY
+    minimum_coeligible: 60
+  HYBRID_TREND_LLM_V1__vs__QUANT_TREND_V1:
+    treatment: HYBRID_TREND_LLM_V1
+    control: QUANT_TREND_V1
+    designation: PRIMARY_CONFIRMATORY
+    minimum_coeligible: 60
+  HYBRID_MR_LLM_V1__vs__QUANT_MR_V1:
+    treatment: HYBRID_MR_LLM_V1
+    control: QUANT_MR_V1
+    designation: EXPLORATORY
+    minimum_coeligible: 30
+triggered_trade_minimums:
+  QUANT_TREND_V1: 40
+  QUANT_MR_V1: 40
+  LLM_V1: 40
+  HYBRID_TREND_LLM_V1: 20
+  HYBRID_MR_LLM_V1: 20
+right_censor_open_trades: true
+no_trade_net_return: 0.0
+next_checkpoint_delay_days: 21
+exploratory_pair_can_determine_project_outcome: false
+infrastructure_readiness_is_decision_input: false
