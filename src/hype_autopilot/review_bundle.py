@@ -156,7 +156,17 @@ def generate_review_bundle(repo: str | Path, request: ReviewBundleRequest) -> st
         for path in changed_files
         if path in {"pyproject.toml", "uv.lock", "requirements.txt", "poetry.lock"}
     )
-    generator_commit = _git(root, "rev-parse", "HEAD").strip()
+    generator_commit = _git(
+        root,
+        "log",
+        "-1",
+        "--format=%H",
+        "--",
+        "src/hype_autopilot/review_bundle.py",
+        "src/hype_autopilot/tooling_cli.py",
+    ).strip()
+    if not generator_commit:
+        generator_commit = _git(root, "rev-parse", "HEAD").strip()
     content_hash = sha256_canonical(
         {
             "request": request,
