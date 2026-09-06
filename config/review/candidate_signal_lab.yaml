@@ -1,4 +1,4 @@
-repository: https://github.com/btc-bobby/HypeBot
+repository: https://github.com/hey-berto/HypeBot
 branch: codex/phase3-analysis-gate
 base_commit: 50d0c86d7d452e61f6ddf7ea5b70ef12f5005850
 reviewed_commit: 290191dbe20ef40f83c0d8c240f04c8d61593aac

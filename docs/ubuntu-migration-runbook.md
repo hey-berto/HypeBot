@@ -68,7 +68,7 @@ systemctl status systemd-timesyncd
 sudo useradd --system --home /var/lib/hypebot --shell /usr/sbin/nologin hypebot
 sudo install -d -o root -g root -m 0755 /opt/hypebot /etc/hypebot /etc/hypebot/authorized
 sudo install -d -o hypebot -g hypebot -m 0750 /var/lib/hypebot/phase1 /var/lib/hypebot/phase2 /var/log/hypebot
-sudo git clone https://github.com/btc-bobby/HypeBot.git /opt/hypebot/repo
+sudo git clone https://github.com/hey-berto/HypeBot.git /opt/hypebot/repo
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase1 e4305c35fd4e73a23ffab83bdf1fa1502e24709c
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase2 0322e53ba55df1c9ad44286616cd71bd2e0700c6
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase3 __PHASE3_TOOLING_COMMIT__
