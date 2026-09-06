@@ -2,8 +2,8 @@
 
 ## Immutable identity
 
-- Generator: `CODE_REVIEW_BUNDLE_V1` at `997671c6fba34ff7f486719b44967af75cc8dfb9`
-- Bundle content hash: `2f7c2f0337430518aea41de0ca4a6f1662a8d03336f1e5ae1089cfe827d1a700`
+- Generator: `CODE_REVIEW_BUNDLE_V1` at `74542204ab7c843cf6b2e1013e95aa10a473d8e4`
+- Bundle content hash: `0d67fb3ea988eec9ee7041294babaa02abdacb478c428a7f854b73d68bd05f14`
 - Repository: `https://github.com/hey-berto/HypeBot`
 - Branch: `codex/phase3-analysis-gate`
 - Base commit: `50d0c86d7d452e61f6ddf7ea5b70ef12f5005850`
