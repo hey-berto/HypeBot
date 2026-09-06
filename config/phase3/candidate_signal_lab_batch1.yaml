@@ -1,0 +1,143 @@
+lab_version: CANDIDATE_SIGNAL_LAB_V1
+batch_id: HYPE_BATCH_001
+status: FROZEN_NOT_EXECUTED
+data_domain: HISTORICAL_NON_PHASE2_ONLY
+production_epoch_access: PROHIBITED
+llm_calls_allowed: false
+stage2_enabled: false
+normalization:
+  method: trailing_zscore
+  long_window_intervals: 96
+  short_window_intervals: 24
+  event_threshold_abs_z: 1.0
+horizons:
+  primary_minutes: [60, 240]
+  exploratory_minutes: [15, 720]
+split:
+  method: chronological_contiguous
+  fit_fraction: 0.60
+  boundary_rule: floor_n_times_fit_fraction
+  definition_reuse: identical_fit_and_confirmation
+multiple_testing:
+  method: benjamini_hochberg
+  family_id: HYPE_BATCH_001_PRIMARY
+  family_size: 14
+  fdr_q: 0.10
+  members: seven_hypotheses_times_two_primary_horizons
+  exploratory_horizons_can_promote: false
+statistics:
+  effect: mean_directional_forward_return
+  uncertainty: stationary_block_bootstrap
+  bootstrap_resamples: 5000
+  confidence_level: 0.90
+  minimum_fit_events: 30
+  minimum_confirmation_events: 20
+  clustering_warning_abs_lag1: 0.30
+promotion:
+  primary_rule: at_least_one_primary_horizon_bh_passes
+  fit_confirmation_sign_agreement_required_per_passing_horizon: true
+  data_quality_required: true
+  stage1_is_not_profitability_evidence: true
+source_policy:
+  required_timezone: UTC
+  expected_interval_minutes: 15
+  no_forward_fill: true
+  exact_provenance_required: true
+  liquidation_data_included: false
+  phase2_database_reads_allowed: false
+code_identity:
+  base_commit: 50d0c86d7d452e61f6ddf7ea5b70ef12f5005850
+  implementation_commit: REQUIRED_BEFORE_BATCH_EXECUTION
+  manifest_hash_algorithm: sha256_canonical
+hypotheses:
+  - hypothesis_id: HYPE_FUNDING_EXTREME_CHANGE_V1
+    family: funding
+    definition: "signal_t = -z96(funding_t) - 0.5*z24(funding_t - funding_t-1)"
+    directionality: contrarian_to_extreme_and_accelerating_funding
+    thresholds: {event_abs_z: 1.0, funding_z_window: 96, change_z_window: 24}
+    sibling_variant_count: 1
+    source_fields: [timestamp, funding_rate]
+    provenance: Hyperliquid historical funding observations with provider timestamps
+    causal_cutoff: values_with_timestamp_lte_t_only
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_FUNDING_OI_INTERACTION_V1
+    family: funding_open_interest
+    definition: "signal_t = -z96(funding_t) * max(z24(log(OI_t/OI_t-1)), 0)"
+    directionality: contrarian_when_funding_extreme_and_open_interest_expands
+    thresholds: {event_abs_z: 1.0, funding_z_window: 96, oi_change_z_window: 24}
+    sibling_variant_count: 1
+    source_fields: [timestamp, funding_rate, open_interest]
+    provenance: Hyperliquid funding and open-interest observations sampled at causal cutoffs
+    causal_cutoff: values_with_timestamp_lte_t_only
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_AGGRESSOR_CVD_V1
+    family: order_flow
+    definition: "signal_t = z96(sum4(buy_notional_t - sell_notional_t))"
+    directionality: continuation_with_aggressor_notional_imbalance
+    thresholds: {event_abs_z: 1.0, aggregation_intervals: 4, z_window: 96}
+    sibling_variant_count: 1
+    source_fields: [timestamp, aggressor_buy_notional, aggressor_sell_notional]
+    provenance: Hyperliquid trade prints classified by taker/aggressor side and aggregated [t-15m,t)
+    causal_cutoff: trades_with_timestamp_lt_interval_end_lte_t
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_TRADE_COUNT_DELTA_V1
+    family: order_flow
+    definition: "signal_t = z96(mean4((buy_count_t-sell_count_t)/(buy_count_t+sell_count_t)))"
+    directionality: continuation_with_aggressor_trade_count_imbalance
+    thresholds: {event_abs_z: 1.0, aggregation_intervals: 4, z_window: 96}
+    sibling_variant_count: 1
+    source_fields: [timestamp, buy_trade_count, sell_trade_count]
+    provenance: Hyperliquid trade prints classified by taker/aggressor side and aggregated [t-15m,t)
+    causal_cutoff: trades_with_timestamp_lt_interval_end_lte_t
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_PRICE_CVD_DIVERGENCE_V1
+    family: order_flow_divergence
+    definition: "signal_t = z96(sum4(buy_notional_t-sell_notional_t)) - z96(log(HYPE_close_t/HYPE_close_t-4))"
+    directionality: price_converges_toward_aggressor_flow
+    thresholds: {event_abs_z: 1.0, comparison_intervals: 4, z_window: 96}
+    sibling_variant_count: 1
+    source_fields: [timestamp, hype_close, aggressor_buy_notional, aggressor_sell_notional]
+    provenance: Hyperliquid HYPE candles and causally classified trade prints
+    causal_cutoff: completed_candle_and_trades_timestamped_lte_t_only
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_BTC_RELATIVE_MOMENTUM_V1
+    family: cross_asset
+    definition: "signal_t = z96(log(HYPE_close_t/HYPE_close_t-4) - log(BTC_close_t/BTC_close_t-4))"
+    directionality: continuation_of_hype_specific_relative_momentum
+    thresholds: {event_abs_z: 1.0, momentum_intervals: 4, z_window: 96}
+    sibling_variant_count: 1
+    source_fields: [timestamp, hype_close, btc_close]
+    provenance: timestamp-aligned completed Hyperliquid HYPE and BTC candles
+    causal_cutoff: completed_candles_with_close_time_lte_t_only
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY
+  - hypothesis_id: HYPE_OI_PRICE_DIVERGENCE_V1
+    family: open_interest_divergence
+    definition: "signal_t = z96(log(HYPE_close_t/HYPE_close_t-4)) - z96(log(OI_t/OI_t-4))"
+    directionality: unlevered_price_move_continuation_relative_to_oi_growth
+    thresholds: {event_abs_z: 1.0, comparison_intervals: 4, z_window: 96}
+    sibling_variant_count: 1
+    source_fields: [timestamp, hype_close, open_interest]
+    provenance: completed Hyperliquid HYPE candles and timestamped open-interest observations
+    causal_cutoff: values_with_timestamp_lte_t_only
+    horizons_minutes: [15, 60, 240, 720]
+    designation: PRIMARY_FAMILY
+    split_id: CHRONOLOGICAL_60_40_V1
+    multiple_testing_family_id: HYPE_BATCH_001_PRIMARY

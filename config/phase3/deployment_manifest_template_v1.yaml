@@ -1,0 +1,23 @@
+manifest_version: HYPE_DEPLOYMENT_MANIFEST_V1_PROPOSAL
+status: UNPOPULATED_DESIGN_ONLY
+network_identity: testnet
+strategy_commit: REQUIRED_AFTER_PHASE3_PROMOTION
+strategy_config_hash: REQUIRED_AFTER_PHASE3_PROMOTION
+feature_schema_identity: REQUIRED_AFTER_PHASE3_PROMOTION
+snapshot_schema_identity: REQUIRED_AFTER_PHASE3_PROMOTION
+llm_identity:
+  required_if_promoted_architecture_uses_llm: true
+  model: REQUIRED_IF_APPLICABLE
+  model_version: REQUIRED_IF_APPLICABLE
+  prompt_hash: REQUIRED_IF_APPLICABLE
+  output_schema_hash: REQUIRED_IF_APPLICABLE
+simulator_version: REQUIRED_AFTER_PHASE3_PROMOTION
+risk_policy_hash: REQUIRED_BEFORE_TESTNET
+execution_policy_hash: REQUIRED_BEFORE_TESTNET
+hyperliquid_adapter_version: REQUIRED_BEFORE_TESTNET
+hyperliquid_sdk_version: REQUIRED_BEFORE_TESTNET
+permission_model_identity: TESTNET_TRADE_ONLY_NO_WITHDRAWAL
+stop_tp_reduce_only_policy_version: REQUIRED_BEFORE_TESTNET
+deployment_artifact_hash: COMPUTED_WHEN_ALL_IDENTITIES_ARE_FROZEN
+formal_testnet_parity_authorized: false
+live_mainnet_authorized: false
