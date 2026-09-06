@@ -1,0 +1,48 @@
+repository: https://github.com/btc-bobby/HypeBot
+branch: codex/phase3-analysis-gate
+base_commit: 50d0c86d7d452e61f6ddf7ea5b70ef12f5005850
+reviewed_commit: 290191dbe20ef40f83c0d8c240f04c8d61593aac
+generated_at: "2026-09-06T05:30:00+00:00"
+category: ANALYSIS_TOOLING
+purpose: Add an isolated preregistered HYPE Candidate Signal Lab, deterministic risk receipts, and design-only deployment parity controls.
+architecture_impact: Adds isolated Phase 3 analysis and safety namespaces; active research runtime paths are not imported or changed.
+research_defining_impact: NONE for active Phase 1/2; freezes a future separately authorized Batch 1 analysis contract.
+operational_impact: NONE; no scheduler, supervisor, wallet, exchange, testnet, or live path is added.
+config_schema_prompt_model_changes:
+  - New Candidate Signal Lab Batch 1 manifest and isolated Lab schema.
+  - New deterministic RiskReceipt policy and isolated schema.
+  - New design-only parity contract and deployment-manifest template.
+  - No active prompt, model, snapshot schema, strategy, simulator, or comparison change.
+migrations_or_persistent_state_changes:
+  - New ignored isolated Lab DB with one manifest, seven hypotheses and zero runs.
+  - New ignored isolated Risk DB with one policy and zero receipts.
+checks:
+  - command: PYTHONPATH=src python -m pytest -q
+    passed: 103
+    failed: 0
+    status: PASS
+  - command: ruff check src/hype_autopilot/phase3 tests/test_phase3_*.py
+    passed: 1
+    failed: 0
+    status: PASS
+  - command: PYTHONPATH=src python -m compileall -q src
+    passed: 1
+    failed: 0
+    status: PASS
+known_limitations:
+  - Historical open-interest coverage requires the official asset-context archive.
+  - Historical fills require official archive retrieval and proven taker-side semantics.
+  - Batch 1 has not run; no alpha result exists.
+security_implications:
+  - No LLM, API-key, wallet, signing, withdrawal, order-submission, or network execution path.
+  - Lab and Risk SQLite paths reject active evidence database identities.
+focused_paths:
+  - config/phase3/candidate_signal_lab_batch1.yaml
+  - src/hype_autopilot/phase3/signal_lab.py
+  - src/hype_autopilot/phase3/risk.py
+  - src/hype_autopilot/phase3/deployment.py
+  - src/hype_autopilot/phase3/infrastructure.py
+reviewer_questions:
+  - Are the causal cutoff and exact-timestamp outcome joins sufficient to prevent lookahead?
+  - Is the 14-test BH-FDR family and fit/confirmation contract adequately preregistered?
+  - Are the RiskReceipt fail-closed gates and future parity tolerances conservative enough?

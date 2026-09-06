@@ -23,6 +23,7 @@ dev = ["pytest>=8.2,<9", "pytest-cov>=5.0"]
 [project.scripts]
 hype-autopilot = "hype_autopilot.cli:main"
 hype-autopilot-phase2 = "hype_autopilot.phase2.cli:main"
+hype-autopilot-tooling = "hype_autopilot.tooling_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hype_autopilot"]

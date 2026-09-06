@@ -1,0 +1,29 @@
+[Unit]
+Description=HYPE Autopilot Phase 1 scheduler (template; do not enable before cutover authorization)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+ConditionPathExists=/etc/hypebot/authorized/phase1-cutover
+
+[Service]
+Type=simple
+User=hypebot
+Group=hypebot
+WorkingDirectory=/opt/hypebot/phase1
+EnvironmentFile=/etc/hypebot/phase1.env
+ExecStartPre=/opt/hypebot/tooling-venv/bin/hype-autopilot-tooling runtime-identity --repo /opt/hypebot/phase1 --expected-commit e4305c35fd4e73a23ffab83bdf1fa1502e24709c --config config/epoch_001.yaml --database /var/lib/hypebot/phase1/epoch_001.sqlite3
+ExecStart=/opt/hypebot/phase1/.venv/bin/hype-autopilot --config config/base.yaml --epoch config/epoch_001.yaml --db /var/lib/hypebot/phase1/epoch_001.sqlite3 schedule
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=900
+StartLimitBurst=5
+TimeoutStopSec=45
+KillSignal=SIGINT
+StandardOutput=append:/var/log/hypebot/phase1.log
+StandardError=append:/var/log/hypebot/phase1.err.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hypebot/phase1 /var/log/hypebot
+
+[Install]
+WantedBy=multi-user.target
