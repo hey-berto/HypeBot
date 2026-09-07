@@ -97,6 +97,7 @@ def test_integrity_no_duplicates_no_backfill_and_quarter_hour_alignment(acceptan
     for case in acceptance["cases"].values():
         final = case["final"]
         assert final["integrity"] == "ok"
+        assert final["journal_mode"] == "wal"
         assert final["foreign_key_violations"] == 0
         assert not any(final["duplicate_groups"].values())
         assert final["boundaries_before_fixture_activation"] == 0

@@ -152,6 +152,7 @@ def create_case(
     db = sqlite3.connect(_database(case))
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
+    db.execute("PRAGMA journal_mode=WAL")
     repository = Phase2Repository(db)
     repository.initialize()
     frozen, digest = load_phase2_config(ROOT / "config/phase2/phase2_epoch_002.yaml")
@@ -657,6 +658,7 @@ def inspect_case(case: Path) -> dict[str, Any]:
         "fills": fills,
         "duplicate_groups": duplicates,
         "integrity": db.execute("PRAGMA integrity_check").fetchone()[0],
+        "journal_mode": db.execute("PRAGMA journal_mode").fetchone()[0],
         "foreign_key_violations": len(
             db.execute("PRAGMA foreign_key_check").fetchall()
         ),
