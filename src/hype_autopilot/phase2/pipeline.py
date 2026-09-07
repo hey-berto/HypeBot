@@ -98,6 +98,7 @@ class Phase2Pipeline:
             end=boundary, observation_class=ObservationClass.SCORED_PROSPECTIVE
         )
         self.collector.recover_gaps(boundary)
+        self.simulator.process_until(boundary)
         snapshot = self.builder.build(
             boundary,
             observation_class=ObservationClass.SCORED_PROSPECTIVE,

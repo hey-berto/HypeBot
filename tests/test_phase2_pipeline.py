@@ -130,6 +130,10 @@ def test_runtime_factory_wires_isolated_database_without_network_or_scoring(
         target.parent.mkdir(parents=True, exist_ok=True)
         copyfile(relative, target)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setattr(
+        "hype_autopilot.phase2.runtime.HyperliquidMarketDataClient",
+        lambda _base_url: object(),
+    )
     runtime = build_phase2_runtime(
         workspace_root=tmp_path,
         experiment_id="synthetic-runtime-build",
