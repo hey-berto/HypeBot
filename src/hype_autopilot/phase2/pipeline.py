@@ -8,8 +8,10 @@ from hype_autopilot.data.models import ObservationClass
 from hype_autopilot.phase2.config import Phase2Config, config_manifest_fields
 from hype_autopilot.phase2.hybrid import HybridAgreementStrategy
 from hype_autopilot.phase2.manifest import Phase2Manifest
+from hype_autopilot.phase2.recovery import Phase2RecoveryManager, RecoveryFaultHook
 from hype_autopilot.phase2.runner import FailClosedLLMRunner, adapt_llm_decision
 from hype_autopilot.phase2.storage import Phase2Repository
+from hype_autopilot.phase2.supervision import ExclusiveProcessLease
 from hype_autopilot.simulation.engine import PaperSimulator
 from hype_autopilot.snapshots.builder import SnapshotBuilder
 from hype_autopilot.snapshots.models import DecisionSnapshot
@@ -43,6 +45,8 @@ class Phase2Pipeline:
         prompt_hash: str,
         output_schema_hash: str,
         database_schema_hash: str,
+        writer_lease: ExclusiveProcessLease | None = None,
+        recovery_fault_hook: RecoveryFaultHook | None = None,
     ) -> None:
         self.config = config
         self.repository = repository
@@ -55,6 +59,7 @@ class Phase2Pipeline:
         self.prompt_hash = prompt_hash
         self.output_schema_hash = output_schema_hash
         self.database_schema_hash = database_schema_hash
+        self.writer_lease = writer_lease
         self.quant_trend = QuantTrendV1()
         self.quant_mr = QuantMeanReversionV1()
         self.detector = SetupDetectorV1()
@@ -66,17 +71,22 @@ class Phase2Pipeline:
             strategy_id="HYBRID_MR_LLM_V1",
             strategy_version=config.hybrid_mr_version,
         )
+        self.recovery = Phase2RecoveryManager(
+            repository=repository,
+            llm_runner=llm_runner,
+            phase2_epoch_id=config.phase2_epoch_id,
+            simulator_latency_seconds=simulator.latency_seconds,
+            fault_hook=recovery_fault_hook,
+        )
 
     def assert_active_manifest(self, manifest: Phase2Manifest) -> None:
         self.config.assert_activation(manifest.authorization_phrase)
         if manifest.phase2_epoch_id != self.config.phase2_epoch_id:
             raise PermissionError("manifest/config epoch mismatch")
         expected = {
-            "git_commit_hash": self.git_commit_hash,
             "config_hash": self.config_hash,
             "prompt_hash": self.prompt_hash,
             "output_schema_hash": self.output_schema_hash,
-            "database_schema_hash": self.database_schema_hash,
         }
         for field, value in expected.items():
             if getattr(manifest, field) != value:
@@ -89,6 +99,20 @@ class Phase2Pipeline:
         ).fetchone()
         if row is None or row["manifest_hash"] != manifest.manifest_hash:
             raise PermissionError("immutable activation manifest is not persisted")
+        if not self.repository.authorize_runtime_identity(
+            manifest=manifest,
+            source_commit=self.git_commit_hash,
+            database_schema_hash=self.database_schema_hash,
+        ):
+            raise PermissionError(
+                "runtime source/schema differs without an OPERATIONAL_ONLY deployment"
+            )
+        if manifest.experiment_id == self.config.phase2_epoch_id:
+            if self.writer_lease is None:
+                raise PermissionError(
+                    "production Phase 2 requires the exclusive writer lease"
+                )
+            self.writer_lease.assert_owned()
 
     def collect_reconstruct_and_score(
         self, *, boundary: datetime, manifest: Phase2Manifest
@@ -98,7 +122,8 @@ class Phase2Pipeline:
             end=boundary, observation_class=ObservationClass.SCORED_PROSPECTIVE
         )
         self.collector.recover_gaps(boundary)
-        self.simulator.process_until(boundary)
+        with self.repository.atomic():
+            self.simulator.process_until(boundary)
         snapshot = self.builder.build(
             boundary,
             observation_class=ObservationClass.SCORED_PROSPECTIVE,
@@ -132,7 +157,8 @@ class Phase2Pipeline:
             self.hybrid_mr.combine(mean_reversion, llm_record)
         )
         decisions = (trend, mean_reversion, llm, hybrid_trend, hybrid_mr)
-        submitted = [self.simulator.submit(decision) for decision in decisions]
+        with self.repository.atomic():
+            submitted = [self.simulator.submit(decision) for decision in decisions]
         return Phase2CycleResult(
             snapshot_hash=snapshot.snapshot_hash or "",
             decisions=decisions,

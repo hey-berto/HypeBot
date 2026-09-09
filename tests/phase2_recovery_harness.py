@@ -29,6 +29,7 @@ from hype_autopilot.phase2.config import (
     file_sha256,
     load_phase2_config,
 )
+from hype_autopilot.phase2.isolation import Phase2SQLiteConnection
 from hype_autopilot.phase2.manifest import Phase2Manifest, build_activation_manifest
 from hype_autopilot.phase2.models import LLMStructuredOutputV2, ProviderResponse
 from hype_autopilot.phase2.pipeline import Phase2Pipeline
@@ -56,6 +57,8 @@ TABLES = (
     "paper_trades",
     "paper_orders",
     "paper_fills",
+    "phase2_recovery_events",
+    "phase2_outcome_exclusions",
 )
 
 
@@ -118,7 +121,11 @@ def _database(case: Path) -> Path:
 
 def _connect(case: Path, *, readonly: bool = False) -> Phase2Repository:
     database = _database(case)
-    db = sqlite3.connect(f"file:{database}?mode={'ro' if readonly else 'rw'}", uri=True)
+    db = sqlite3.connect(
+        f"file:{database}?mode={'ro' if readonly else 'rw'}",
+        uri=True,
+        factory=Phase2SQLiteConnection,
+    )
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     if readonly:
@@ -127,7 +134,11 @@ def _connect(case: Path, *, readonly: bool = False) -> Phase2Repository:
 
 
 def create_case(
-    case: Path, *, scenario: str = "normal", response_mode: str = "valid"
+    case: Path,
+    *,
+    scenario: str = "normal",
+    response_mode: str = "valid",
+    first_boundary: datetime = FIRST,
 ) -> dict[str, Any]:
     if case.exists():
         raise FileExistsError(
@@ -140,8 +151,8 @@ def create_case(
         "permanently_non_scored": True,
         "experiment_id": f"{AUDIT_CLASS}:{case.name}",
         "fixture_clock": True,
-        "fixture_first_boundary": FIRST.isoformat(),
-        "fixture_activation": (FIRST - timedelta(seconds=10)).isoformat(),
+        "fixture_first_boundary": first_boundary.isoformat(),
+        "fixture_activation": (first_boundary - timedelta(seconds=10)).isoformat(),
         "market_source": "deterministic_offline_raw_market_fixture_not_production",
         "provider_source": "offline_ProviderResponse_fixture_not_real_provider",
         "scenario": scenario,
@@ -149,7 +160,7 @@ def create_case(
         "identities": identities,
     }
     (case / "NON_SCORED.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    db = sqlite3.connect(_database(case))
+    db = sqlite3.connect(_database(case), factory=Phase2SQLiteConnection)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA journal_mode=WAL")
@@ -162,7 +173,7 @@ def create_case(
     manifest = build_activation_manifest(
         config=enabled,
         experiment_id=metadata["experiment_id"],
-        activation_timestamp=FIRST - timedelta(seconds=10),
+        activation_timestamp=first_boundary - timedelta(seconds=10),
         authorization=ACTIVATION_PHRASE,
         git_commit_hash=identities["head_commit"],
         config_hash=digest,
@@ -171,9 +182,12 @@ def create_case(
         database_schema_hash=identities["database_schema_hash"],
     )
     repository.save_manifest(manifest)
-    populate_scoreable(repository.core, FIRST)
+    populate_scoreable(repository.core, first_boundary)
     repository.core.health(
-        AUDIT_CLASS, "PERMANENTLY_NON_SCORED", metadata, FIRST - timedelta(seconds=10)
+        AUDIT_CLASS,
+        "PERMANENTLY_NON_SCORED",
+        metadata,
+        first_boundary - timedelta(seconds=10),
     )
     db.close()
     return metadata
@@ -182,10 +196,18 @@ def create_case(
 class RawFixtureCollector:
     """Injects only raw observations; never injects snapshots or decisions."""
 
-    def __init__(self, repository: Phase2Repository, *, scenario: str, crash: str):
+    def __init__(
+        self,
+        repository: Phase2Repository,
+        *,
+        scenario: str,
+        crash: str,
+        first_boundary: datetime,
+    ):
         self.repository = repository
         self.scenario = scenario
         self.crash = crash
+        self.first_boundary = first_boundary
 
     def collect_incremental(
         self, *, end: datetime, observation_class: ObservationClass
@@ -193,7 +215,7 @@ class RawFixtureCollector:
         if self.crash == "before_collection":
             os._exit(87)
         repository = self.repository.core
-        if end > FIRST:
+        if end > self.first_boundary:
             for symbol, intervals in (
                 ("HYPE", ("5m", "15m", "1h", "4h")),
                 ("BTC", ("15m", "1h", "4h")),
@@ -223,12 +245,13 @@ class RawFixtureCollector:
                 at = latest
                 while at < end:
                     close = at + timedelta(minutes=1)
-                    target = self.scenario == "normal" and close > FIRST + timedelta(
-                        minutes=15
+                    target = (
+                        self.scenario == "normal"
+                        and close > self.first_boundary + timedelta(minutes=15)
                     )
                     stop = (
                         self.scenario == "adverse_first"
-                        and close > FIRST + timedelta(minutes=15)
+                        and close > self.first_boundary + timedelta(minutes=15)
                     )
                     bars.append(
                         Candle(
@@ -250,7 +273,7 @@ class RawFixtureCollector:
                 repository.save_candles(bars)
         # Existing FIRST context is not overwritten: use a later source timestamp
         # at each future boundary and preserve all seed rows.
-        if end > FIRST:
+        if end > self.first_boundary:
             repository.save_asset_context(
                 AssetContext(
                     symbol="HYPE",
@@ -281,10 +304,13 @@ class RawFixtureCollector:
 
 
 class FixtureProvider:
-    def __init__(self, config: Any, *, mode: str, scenario: str):
+    def __init__(
+        self, config: Any, *, mode: str, scenario: str, first_boundary: datetime
+    ):
         self.config = config
         self.mode = mode
         self.scenario = scenario
+        self.first_boundary = first_boundary
         self.calls = 0
 
     def invoke(
@@ -295,7 +321,7 @@ class FixtureProvider:
         assert timeout_seconds == self.config.request_timeout_seconds
         snapshot = json.loads(snapshot_json)
         at = datetime.fromisoformat(snapshot["snapshot_timestamp"])
-        trade = at == FIRST
+        trade = at == self.first_boundary
         # FIRST's fixture reference is about 121. Geometry remains valid for
         # NOW entry; simulator's first eligible raw 1m fallback close is 100.
         value = {
@@ -348,6 +374,7 @@ def run_worker(
     block_network()
     repository = _connect(case)
     metadata = json.loads((case / "NON_SCORED.json").read_text())
+    first_boundary = datetime.fromisoformat(metadata["fixture_first_boundary"])
     frozen, digest = load_phase2_config(ROOT / "config/phase2/phase2_epoch_002.yaml")
     frozen.assert_build_only()
     config = frozen.model_copy(
@@ -357,13 +384,16 @@ def run_worker(
         repository.db.execute("SELECT payload_json FROM phase2_manifests").fetchone()[0]
     )
     assert manifest.experiment_id.startswith(AUDIT_CLASS)
-    boundary = FIRST + timedelta(minutes=15 * boundary_number)
+    boundary = first_boundary + timedelta(minutes=15 * boundary_number)
     assert boundary >= manifest.activation_timestamp
     assert planned_phase2_boundary(boundary - timedelta(seconds=1)) == boundary
     epoch = load_yaml(ROOT / "config/epoch_001.yaml")
     epoch["epoch_id"] = config.phase2_epoch_id
     provider = FixtureProvider(
-        config, mode=metadata["response_mode"], scenario=metadata["scenario"]
+        config,
+        mode=metadata["response_mode"],
+        scenario=metadata["scenario"],
+        first_boundary=first_boundary,
     )
     if crash == "after_trade_before_order":
         original = repository.core.save_trade
@@ -396,6 +426,15 @@ def run_worker(
                 os._exit(87)
 
         repository.core.save_fill = crash_after_entry_fill
+
+    def recovery_fault(stage: str, details: dict[str, object]) -> None:
+        del details
+        if (
+            crash == "during_recovery_after_raw"
+            and stage == "AFTER_RAW_DECISION_RECOVERY"
+        ):
+            os._exit(87)
+
     pipeline = Phase2Pipeline(
         config=config,
         repository=repository,
@@ -403,7 +442,10 @@ def run_worker(
             repository.core, load_yaml(ROOT / "config/base.yaml"), epoch
         ),
         collector=RawFixtureCollector(
-            repository, scenario=metadata["scenario"], crash=crash
+            repository,
+            scenario=metadata["scenario"],
+            crash=crash,
+            first_boundary=first_boundary,
         ),
         llm_runner=FailClosedLLMRunner(
             config=config,
@@ -421,6 +463,7 @@ def run_worker(
             output_json_schema(config.output_schema_version)
         ),
         database_schema_hash=phase2_database_schema_hash(),
+        recovery_fault_hook=recovery_fault,
     )
     result = run_phase2_boundary(pipeline, manifest=manifest, boundary=boundary)
     snapshot = inspect_case(case)
@@ -574,12 +617,33 @@ def inspect_case(case: Path) -> dict[str, Any]:
                 "snapshot_hash": row["input_snapshot_hash"],
                 "exact_parsed_raw_lineage": same,
                 "schema_valid": value["schema_valid"],
+                "recovered_from_persisted_raw_response": value["metadata"].get(
+                    "recovered_from_persisted_raw_response", False
+                ),
+                "provider_reinvoked": value["metadata"].get("provider_reinvoked"),
+                "source_attempt_integrity_hash": value["metadata"].get(
+                    "source_attempt_integrity_hash"
+                ),
             }
         )
     cycles = [
         dict(row)
         for row in db.execute(
             "SELECT scheduled_at, status, snapshot_hash, details_json FROM research_cycles ORDER BY scheduled_at"
+        )
+    ]
+    recovery_events = [
+        dict(row)
+        for row in db.execute(
+            "SELECT recovery_event_id,event_type,source_identity,payload_json,integrity_hash "
+            "FROM phase2_recovery_events ORDER BY occurred_at,recovery_event_id"
+        )
+    ]
+    outcome_exclusions = [
+        dict(row)
+        for row in db.execute(
+            "SELECT exclusion_id,paper_trade_id,reason_code,source_identity,payload_json,integrity_hash "
+            "FROM phase2_outcome_exclusions ORDER BY excluded_at,exclusion_id"
         )
     ]
     snapshot_lineage = []
@@ -656,6 +720,8 @@ def inspect_case(case: Path) -> dict[str, Any]:
         "trades": trades,
         "orders": orders,
         "fills": fills,
+        "recovery_events": recovery_events,
+        "outcome_exclusions": outcome_exclusions,
         "duplicate_groups": duplicates,
         "integrity": db.execute("PRAGMA integrity_check").fetchone()[0],
         "journal_mode": db.execute("PRAGMA journal_mode").fetchone()[0],
@@ -744,6 +810,15 @@ def run_suite(destination: Path) -> dict[str, Any]:
     final = inspect_case(case)
     final["database_sha256"] = file_sha256(_database(case))
     result["cases"][case.name] = {"trace": trace, "final": final}
+    case = destination / "double_crash_raw_recovery"
+    create_case(case)
+    trace = [invoke_worker(case, 0, crash="after_attempt_before_decision")]
+    trace.append(invoke_worker(case, 0, crash="during_recovery_after_raw"))
+    trace.append(invoke_worker(case, 0))
+    trace.append(invoke_worker(case, 1))
+    final = inspect_case(case)
+    final["database_sha256"] = file_sha256(_database(case))
+    result["cases"][case.name] = {"trace": trace, "final": final}
     blockers = []
     for name, value in result["cases"].items():
         final = value["final"]
@@ -774,8 +849,7 @@ def run_suite(destination: Path) -> dict[str, Any]:
         "Offline fixture provider proves persistence/schema controls, not fresh real-provider availability.",
         "Fixture timestamps are simulated chronology, never production evidence or production backfill.",
         "Frozen simulator has no pending-entry price-trigger or pending-expiry rule; TTL begins after entry.",
-        "Harness test pass can mean a known failure witness reproduced; it is not acceptance pass.",
-        "Supervisor restart acceptance is reported separately by the external-supervision harness.",
+        "Supervisor restart acceptance is reported separately by the single-writer process harness.",
     ]
     (destination / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result

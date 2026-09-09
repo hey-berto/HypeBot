@@ -7,7 +7,7 @@ from hashlib import sha256
 
 from pydantic import ValidationError
 
-from hype_autopilot.hashing import canonical_json
+from hype_autopilot.hashing import canonical_json, sha256_canonical
 from hype_autopilot.phase2.audit import (
     SensitiveCredentialMaterial,
     validate_raw_provider_plaintext,
@@ -102,6 +102,14 @@ class FailClosedLLMRunner:
         )
         if existing is not None:
             return existing
+        recovered = self.recover_persisted_response(frozen)
+        if recovered is not None:
+            return recovered
+        prior_attempts = self.repository.load_attempts(
+            self.experiment_id,
+            self.config.phase2_epoch_id,
+            frozen.snapshot_hash,
+        )
         now = self.clock().astimezone(UTC)
         age = max(0.0, (now - frozen.snapshot_timestamp).total_seconds())
         if not frozen.data_quality.scoreable:
@@ -120,7 +128,27 @@ class FailClosedLLMRunner:
 
         snapshot_json = canonical_json(frozen)
         max_attempts = 1 + self.config.malformed_output_max_retries
-        for attempt_number in range(1, max_attempts + 1):
+        if prior_attempts:
+            last = prior_attempts[-1]
+            if last.provider_status not in {"MALFORMED", "INVALID_SCHEMA"}:
+                try:
+                    reason = FailClosedReason(last.error_code or "API_MODEL_ERROR")
+                except ValueError:
+                    reason = FailClosedReason.API_MODEL_ERROR
+                return self._persist_fail_closed_from_attempt(
+                    frozen, last, reason=reason
+                )
+            if last.attempt >= max_attempts:
+                return self._persist_fail_closed_from_attempt(
+                    frozen,
+                    last,
+                    reason=FailClosedReason.RETRY_EXHAUSTED,
+                    metadata={
+                        "terminal_cause": last.error_code or last.provider_status
+                    },
+                )
+        first_attempt = prior_attempts[-1].attempt + 1 if prior_attempts else 1
+        for attempt_number in range(first_attempt, max_attempts + 1):
             try:
                 if self.resource_guard is None:
                     response = self.provider.invoke(
@@ -219,6 +247,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -240,6 +269,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     None,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -264,6 +294,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -287,6 +318,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -309,6 +341,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 if attempt_number < max_attempts:
                     continue
@@ -336,6 +369,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 if attempt_number < max_attempts:
                     continue
@@ -360,6 +394,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -381,6 +416,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -404,6 +440,7 @@ class FailClosedLLMRunner:
                     raw_hash,
                     raw_plaintext,
                     raw_capture_status,
+                    provider_response=response,
                 )
                 return self._persist_fail_closed(
                     frozen,
@@ -423,61 +460,156 @@ class FailClosedLLMRunner:
                 raw_hash,
                 raw_plaintext,
                 raw_capture_status,
+                provider_response=response,
             )
-            record = LLMDecisionRecord(
-                experiment_id=self.experiment_id,
-                phase2_epoch_id=self.config.phase2_epoch_id,
-                timestamp=frozen.snapshot_timestamp,
-                input_snapshot_hash=frozen.snapshot_hash,
-                model=response.model,
-                model_version=response.model_version,
-                prompt_version=self.config.prompt_version,
-                output_schema_version=output.output_schema_version,
-                decision=output.decision,
-                confidence=output.confidence,
-                rationale_tags=output.rationale_tags,
-                invocation_reason=output.invocation_reason,
-                entry=output.entry,
-                stop=output.stop,
-                target=output.target,
-                invalidation=output.invalidation,
-                ttl_minutes=output.ttl_minutes,
-                request_started_at=response.request_started_at,
-                request_ended_at=response.request_ended_at,
-                snapshot_to_call_age_seconds=age,
-                latency_ms=max(
-                    0,
-                    int(
-                        (
-                            response.request_ended_at - response.request_started_at
-                        ).total_seconds()
-                        * 1000
-                    ),
-                ),
-                retry_count=attempt_number - 1,
-                input_tokens=response.input_tokens,
-                cached_input_tokens=response.cached_input_tokens,
-                output_tokens=response.output_tokens,
-                model_cost_usd=response.cost_usd,
-                tool_calls_count=0,
-                tool_integrity_ok=True,
-                schema_valid=True,
-                geometry_valid=True,
-                runner_status=RunnerStatus.VALID,
-                reason_code=FailClosedReason.NONE,
-                metadata={
-                    "bull_case": list(output.bull_case),
-                    "bear_case": list(output.bear_case),
-                    "data_conflicts": list(output.data_conflicts),
-                    "snapshot_payload_sha256": sha256(
-                        snapshot_json.encode("utf-8")
-                    ).hexdigest(),
-                },
-            )
-            return self.repository.save_llm_decision(
-                self.config.llm_strategy_version, record
+            return self._persist_valid(
+                frozen,
+                output=output,
+                response=response,
+                attempt_number=attempt_number,
+                snapshot_json=snapshot_json,
             )
         raise AssertionError("unreachable")
+
+    def recover_persisted_response(
+        self, snapshot: DecisionSnapshot
+    ) -> LLMDecisionRecord | None:
+        """Rebuild a missing decision from immutable raw evidence, never the provider."""
+        frozen = freeze_snapshot(snapshot)
+        assert frozen.snapshot_hash is not None
+        attempts = self.repository.load_attempts(
+            self.experiment_id,
+            self.config.phase2_epoch_id,
+            frozen.snapshot_hash,
+        )
+        valid = [attempt for attempt in attempts if attempt.provider_status == "VALID"]
+        if not valid:
+            return None
+        if len(valid) != 1:
+            raise RuntimeError("ambiguous persisted Phase 2 VALID attempts")
+        attempt = valid[0]
+        if (
+            attempt.raw_capture_status != "CAPTURED"
+            or attempt.raw_output_plaintext is None
+            or attempt.raw_output_hash is None
+            or attempt.tool_calls_count
+        ):
+            raise RuntimeError("VALID attempt is not deterministically recoverable")
+        if attempt.model not in {
+            None,
+            self.config.model,
+        } or attempt.model_version not in {None, self.config.model_version}:
+            raise RuntimeError(
+                "persisted provider identity differs from frozen identity"
+            )
+        raw = json.loads(attempt.raw_output_plaintext)
+        output = structured_output_model(
+            self.config.output_schema_version
+        ).model_validate(raw)
+        if output.input_snapshot_hash != frozen.snapshot_hash:
+            raise RuntimeError("persisted raw response snapshot hash mismatch")
+        validate_geometry(output, frozen)
+        response = self._response_from_attempt(attempt)
+        return self._persist_valid(
+            frozen,
+            output=output,
+            response=response,
+            attempt_number=attempt.attempt,
+            snapshot_json=canonical_json(frozen),
+            recovery_metadata={
+                "recovered_from_persisted_raw_response": True,
+                "source_attempt_integrity_hash": sha256_canonical(attempt),
+                "provider_reinvoked": False,
+            },
+        )
+
+    def _response_from_attempt(self, attempt: InvocationAttempt) -> object:
+        class PersistedResponse:
+            pass
+
+        response = PersistedResponse()
+        response.raw_output = attempt.raw_output_plaintext or ""
+        response.model = attempt.model or self.config.model
+        response.model_version = attempt.model_version or self.config.model_version
+        response.request_started_at = attempt.started_at
+        response.request_ended_at = attempt.ended_at
+        response.input_tokens = attempt.input_tokens
+        response.cached_input_tokens = attempt.cached_input_tokens
+        response.output_tokens = attempt.output_tokens
+        response.cost_usd = attempt.model_cost_usd
+        response.tool_calls_count = attempt.tool_calls_count
+        return response
+
+    def _persist_valid(
+        self,
+        snapshot: DecisionSnapshot,
+        *,
+        output: LLMStructuredOutput,
+        response: object,
+        attempt_number: int,
+        snapshot_json: str,
+        recovery_metadata: dict[str, object] | None = None,
+    ) -> LLMDecisionRecord:
+        assert snapshot.snapshot_hash is not None
+        age = max(
+            0.0,
+            (response.request_started_at - snapshot.snapshot_timestamp).total_seconds(),
+        )
+        metadata: dict[str, object] = {
+            "bull_case": list(output.bull_case),
+            "bear_case": list(output.bear_case),
+            "data_conflicts": list(output.data_conflicts),
+            "snapshot_payload_sha256": sha256(
+                snapshot_json.encode("utf-8")
+            ).hexdigest(),
+        }
+        metadata.update(recovery_metadata or {})
+        record = LLMDecisionRecord(
+            experiment_id=self.experiment_id,
+            phase2_epoch_id=self.config.phase2_epoch_id,
+            timestamp=snapshot.snapshot_timestamp,
+            input_snapshot_hash=snapshot.snapshot_hash,
+            model=response.model,
+            model_version=response.model_version,
+            prompt_version=self.config.prompt_version,
+            output_schema_version=output.output_schema_version,
+            decision=output.decision,
+            confidence=output.confidence,
+            rationale_tags=output.rationale_tags,
+            invocation_reason=output.invocation_reason,
+            entry=output.entry,
+            stop=output.stop,
+            target=output.target,
+            invalidation=output.invalidation,
+            ttl_minutes=output.ttl_minutes,
+            request_started_at=response.request_started_at,
+            request_ended_at=response.request_ended_at,
+            snapshot_to_call_age_seconds=age,
+            latency_ms=max(
+                0,
+                int(
+                    (
+                        response.request_ended_at - response.request_started_at
+                    ).total_seconds()
+                    * 1000
+                ),
+            ),
+            retry_count=attempt_number - 1,
+            input_tokens=response.input_tokens,
+            cached_input_tokens=response.cached_input_tokens,
+            output_tokens=response.output_tokens,
+            model_cost_usd=response.cost_usd,
+            tool_calls_count=0,
+            tool_integrity_ok=True,
+            schema_valid=True,
+            geometry_valid=True,
+            runner_status=RunnerStatus.VALID,
+            reason_code=FailClosedReason.NONE,
+            metadata=metadata,
+        )
+        return self.repository.save_llm_decision(
+            self.config.llm_strategy_version, record
+        )
 
     def _save_attempt(
         self,
@@ -491,6 +623,7 @@ class FailClosedLLMRunner:
         raw_output_hash: str | None,
         raw_output_plaintext: str | None = None,
         raw_capture_status: str = "NOT_AVAILABLE",
+        provider_response: object | None = None,
     ) -> None:
         assert snapshot.snapshot_hash is not None
         self.repository.save_attempt(
@@ -507,7 +640,43 @@ class FailClosedLLMRunner:
                 provider_status=provider_status,
                 error_code=error_code,
                 tool_calls_count=tool_calls_count,
+                model=getattr(provider_response, "model", None),
+                model_version=getattr(provider_response, "model_version", None),
+                input_tokens=getattr(provider_response, "input_tokens", 0),
+                cached_input_tokens=getattr(
+                    provider_response, "cached_input_tokens", 0
+                ),
+                output_tokens=getattr(provider_response, "output_tokens", 0),
+                model_cost_usd=getattr(provider_response, "cost_usd", 0.0),
             )
+        )
+
+    def _persist_fail_closed_from_attempt(
+        self,
+        snapshot: DecisionSnapshot,
+        attempt: InvocationAttempt,
+        *,
+        reason: FailClosedReason,
+        metadata: dict[str, object] | None = None,
+    ) -> LLMDecisionRecord:
+        response = self._response_from_attempt(attempt)
+        details = {
+            "recovered_from_persisted_attempt": True,
+            "source_attempt_integrity_hash": sha256_canonical(attempt),
+            "provider_reinvoked": False,
+        }
+        details.update(metadata or {})
+        age = max(
+            0.0,
+            (attempt.started_at - snapshot.snapshot_timestamp).total_seconds(),
+        )
+        return self._persist_fail_closed(
+            snapshot,
+            reason,
+            age=age,
+            response=response,
+            retry_count=attempt.attempt - 1,
+            metadata=details,
         )
 
     def _persist_fail_closed(

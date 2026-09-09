@@ -109,7 +109,7 @@ def test_integrity_no_duplicates_no_backfill_and_quarter_hour_alignment(acceptan
     }
 
 
-def test_crash_faults_are_reported_as_blockers_not_hidden_by_duplicate_skip(acceptance):
+def test_interrupted_cycles_recover_without_recollection_or_duplicates(acceptance):
     for name in (
         "interrupted_before_collection",
         "interrupted_after_trade",
@@ -117,16 +117,30 @@ def test_crash_faults_are_reported_as_blockers_not_hidden_by_duplicate_skip(acce
     ):
         trace = acceptance["cases"][name]["trace"]
         assert trace[0]["exit_code"] == 87
-        assert trace[1]["status"] == "DUPLICATE_SKIPPED"
-        assert trace[1]["checkpoint"]["counts"] == trace[0]["checkpoint"]["counts"]
+        assert trace[1]["status"] == "RECOVERY_EXCLUDED"
+        assert trace[1]["provider_fixture_calls"] == 0
         assert trace[2]["status"] == "COMPLETE"
-        assert acceptance["cases"][name]["final"]["running_cycles"] == 1
+        assert acceptance["cases"][name]["final"]["running_cycles"] == 0
     orphan = acceptance["cases"]["interrupted_after_trade"]["final"]
-    assert orphan["trades_missing_orders"] == 1
+    assert orphan["trades_missing_orders"] == 0
     unfinished = acceptance["cases"]["interrupted_after_attempt"]["final"]
-    assert unfinished["attempts_without_final_decision"] == 1
-    assert acceptance["disposition"] == "PHASE_2_SIMULATOR_ACCEPTANCE_BLOCKED"
-    assert acceptance["blocking_witnesses"]
+    assert unfinished["attempts_without_final_decision"] == 0
+    recovered_lineage = [
+        row
+        for row in unfinished["parsed_raw_lineage"]
+        if row["recovered_from_persisted_raw_response"]
+    ]
+    assert len(recovered_lineage) == 1
+    assert recovered_lineage[0]["provider_reinvoked"] is False
+    assert len(recovered_lineage[0]["source_attempt_integrity_hash"]) == 64
+    recovered = [
+        row
+        for row in unfinished["recovery_events"]
+        if row["event_type"] == "INTERRUPTED_CYCLE_FINALIZED"
+    ]
+    assert recovered
+    assert acceptance["disposition"] == "PHASE_2_SIMULATOR_ACCEPTANCE_PASSED"
+    assert not acceptance["blocking_witnesses"]
 
 
 def test_entry_fill_crash_is_observable_and_does_not_duplicate_fill_on_recovery(
@@ -136,21 +150,15 @@ def test_entry_fill_crash_is_observable_and_does_not_duplicate_fill_on_recovery(
     assert trace[1]["exit_code"] == 87
     assert llm_trades(trace[1]["checkpoint"])[0]["status"] == "PENDING_ENTRY"
     trade_id = llm_trades(trace[1]["checkpoint"])[0]["paper_trade_id"]
-    assert (
-        len(
-            [
-                row
-                for row in trace[1]["checkpoint"]["fills"]
-                if row["paper_trade_id"] == trade_id
-            ]
-        )
-        == 1
-    )
-    assert trace[2]["status"] == "DUPLICATE_SKIPPED"
-    assert trace[2]["checkpoint"]["counts"] == trace[1]["checkpoint"]["counts"]
+    assert not [
+        row
+        for row in trace[1]["checkpoint"]["fills"]
+        if row["paper_trade_id"] == trade_id
+    ]
+    assert trace[2]["status"] == "RECOVERY_EXCLUDED"
     assert trace[3]["status"] == "COMPLETE"
     assert trace[3]["checkpoint"]["duplicate_groups"]["paper_fills"] == 0
-    assert trace[3]["checkpoint"]["running_cycles"] == 1
+    assert trace[3]["checkpoint"]["running_cycles"] == 0
     assert (
         len(
             [
@@ -161,3 +169,18 @@ def test_entry_fill_crash_is_observable_and_does_not_duplicate_fill_on_recovery(
         )
         == 2
     )
+
+
+def test_double_crash_recovery_is_idempotent_and_never_recalls_provider(acceptance):
+    case = acceptance["cases"]["double_crash_raw_recovery"]
+    trace = case["trace"]
+    assert trace[0]["exit_code"] == 87
+    assert trace[1]["exit_code"] == 87
+    assert trace[2]["status"] == "RECOVERY_EXCLUDED"
+    assert trace[2]["provider_fixture_calls"] == 0
+    final = case["final"]
+    assert final["running_cycles"] == 0
+    assert final["attempts_without_final_decision"] == 0
+    assert final["counts"]["llm_invocation_attempts"] == 2
+    assert not any(final["duplicate_groups"].values())
+    assert final["integrity"] == "ok"

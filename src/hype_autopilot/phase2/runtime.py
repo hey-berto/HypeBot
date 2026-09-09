@@ -23,6 +23,7 @@ from hype_autopilot.phase2.provider import (
 from hype_autopilot.phase2.resources import Phase2ResourceGuard
 from hype_autopilot.phase2.runner import FailClosedLLMRunner
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
+from hype_autopilot.phase2.supervision import ExclusiveProcessLease
 from hype_autopilot.simulation.engine import PaperSimulator
 from hype_autopilot.snapshots.builder import SnapshotBuilder
 
@@ -34,9 +35,14 @@ class Phase2Runtime:
     repository: Phase2Repository
     resource_guard: Phase2ResourceGuard
     pipeline: Phase2Pipeline
+    writer_lease: ExclusiveProcessLease
 
     def apply_process_isolation(self) -> None:
         self.resource_guard.apply_process_limits()
+
+    def close(self) -> None:
+        self.repository.db.close()
+        self.writer_lease.release()
 
 
 def _resolve_git_identity(root: Path, supplied: str | None) -> str:
@@ -82,66 +88,77 @@ def build_phase2_runtime(
     config_file = resolve_inside_workspace(config_path, root)
     config, digest = load_phase2_config(config_file)
     database_path = resolve_inside_workspace(config.database_path, root)
-    db = connect_phase2(database_path, root)
-    repository = Phase2Repository(db)
-    repository.initialize()
+    writer_lease = ExclusiveProcessLease(
+        database_path.with_suffix(database_path.suffix + ".writer.lock"),
+        role="phase2-writer",
+        epoch_id=config.phase2_epoch_id,
+    ).acquire()
+    try:
+        db = connect_phase2(database_path, root)
+        repository = Phase2Repository(db)
+        repository.initialize()
 
-    base = load_yaml(resolve_inside_workspace(base_path, root))
-    frozen_epoch = load_yaml(resolve_inside_workspace(frozen_epoch_path, root))
-    phase2_epoch = {
-        **frozen_epoch,
-        "epoch_id": config.phase2_epoch_id,
-        "snapshot_schema_version": config.snapshot_schema_version,
-        "feature_schema_version": config.feature_schema_version,
-        "regime_version": config.regime_version,
-        "quant_trend_version": config.quant_trend_version,
-        "quant_mean_reversion_version": config.quant_mean_reversion_version,
-        "detector_version": config.detector_version,
-        "simulator_version": config.simulator_version,
-    }
-    builder = SnapshotBuilder(repository.core, base, phase2_epoch)
-    collector = MarketDataCollector(
-        repository.core,
-        HyperliquidMarketDataClient(base["hyperliquid"]["base_url"]),
-    )
-    simulator_config = phase2_epoch["simulator"]
-    simulator = PaperSimulator(
-        repository.core,
-        latency_seconds=simulator_config["signal_to_entry_latency_seconds"],
-        fee_bps_per_side=simulator_config["taker_fee_bps_per_side"],
-        slippage_bps_per_side=simulator_config["slippage_bps_per_side"],
-    )
-    resource_guard = Phase2ResourceGuard(config.resource_isolation, database_path)
-    provider = openai_provider_from_config(config, workspace_root=str(root))
-    prompt_path = resolve_inside_workspace(config.prompt_path, root)
-    prompt = prompt_path.read_text(encoding="utf-8")
-    llm_runner = FailClosedLLMRunner(
-        config=config,
-        provider=provider,
-        repository=repository,
-        prompt=prompt,
-        experiment_id=experiment_id,
-        resource_guard=resource_guard,
-    )
-    pipeline = Phase2Pipeline(
-        config=config,
-        repository=repository,
-        builder=builder,
-        collector=collector,
-        llm_runner=llm_runner,
-        simulator=simulator,
-        git_commit_hash=git_commit_hash,
-        config_hash=digest,
-        prompt_hash=file_sha256(prompt_path),
-        output_schema_hash=sha256_canonical(
-            output_json_schema(config.output_schema_version)
-        ),
-        database_schema_hash=phase2_database_schema_hash(),
-    )
-    return Phase2Runtime(
-        config=config,
-        config_hash=digest,
-        repository=repository,
-        resource_guard=resource_guard,
-        pipeline=pipeline,
-    )
+        base = load_yaml(resolve_inside_workspace(base_path, root))
+        frozen_epoch = load_yaml(resolve_inside_workspace(frozen_epoch_path, root))
+        phase2_epoch = {
+            **frozen_epoch,
+            "epoch_id": config.phase2_epoch_id,
+            "snapshot_schema_version": config.snapshot_schema_version,
+            "feature_schema_version": config.feature_schema_version,
+            "regime_version": config.regime_version,
+            "quant_trend_version": config.quant_trend_version,
+            "quant_mean_reversion_version": config.quant_mean_reversion_version,
+            "detector_version": config.detector_version,
+            "simulator_version": config.simulator_version,
+        }
+        builder = SnapshotBuilder(repository.core, base, phase2_epoch)
+        collector = MarketDataCollector(
+            repository.core,
+            HyperliquidMarketDataClient(base["hyperliquid"]["base_url"]),
+        )
+        simulator_config = phase2_epoch["simulator"]
+        simulator = PaperSimulator(
+            repository.core,
+            latency_seconds=simulator_config["signal_to_entry_latency_seconds"],
+            fee_bps_per_side=simulator_config["taker_fee_bps_per_side"],
+            slippage_bps_per_side=simulator_config["slippage_bps_per_side"],
+        )
+        resource_guard = Phase2ResourceGuard(config.resource_isolation, database_path)
+        provider = openai_provider_from_config(config, workspace_root=str(root))
+        prompt_path = resolve_inside_workspace(config.prompt_path, root)
+        prompt = prompt_path.read_text(encoding="utf-8")
+        llm_runner = FailClosedLLMRunner(
+            config=config,
+            provider=provider,
+            repository=repository,
+            prompt=prompt,
+            experiment_id=experiment_id,
+            resource_guard=resource_guard,
+        )
+        pipeline = Phase2Pipeline(
+            config=config,
+            repository=repository,
+            builder=builder,
+            collector=collector,
+            llm_runner=llm_runner,
+            simulator=simulator,
+            git_commit_hash=git_commit_hash,
+            config_hash=digest,
+            prompt_hash=file_sha256(prompt_path),
+            output_schema_hash=sha256_canonical(
+                output_json_schema(config.output_schema_version)
+            ),
+            database_schema_hash=phase2_database_schema_hash(),
+            writer_lease=writer_lease,
+        )
+        return Phase2Runtime(
+            config=config,
+            config_hash=digest,
+            repository=repository,
+            resource_guard=resource_guard,
+            pipeline=pipeline,
+            writer_lease=writer_lease,
+        )
+    except BaseException:
+        writer_lease.release()
+        raise

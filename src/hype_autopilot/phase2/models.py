@@ -188,6 +188,12 @@ class InvocationAttempt(BaseModel):
     provider_status: str
     error_code: str | None = None
     tool_calls_count: int = 0
+    model: str | None = None
+    model_version: str | None = None
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    model_cost_usd: float = 0.0
 
     @model_validator(mode="after")
     def validate_raw_audit_capture(self) -> InvocationAttempt:

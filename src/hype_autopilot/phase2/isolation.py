@@ -1,11 +1,63 @@
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 
 class IsolationViolation(RuntimeError):
     pass
+
+
+class Phase2SQLiteConnection(sqlite3.Connection):
+    """SQLite connection whose nested atomic scopes defer repository commits.
+
+    The shared repositories intentionally commit after each ordinary operation.
+    Phase 2 uses this connection subclass to group simulator state transitions
+    without changing those repositories or the frozen simulator economics.
+    """
+
+    _phase2_atomic_depth = 0
+    _phase2_rollback_only = False
+
+    def commit(self) -> None:
+        if self._phase2_atomic_depth == 0:
+            super().commit()
+
+    def rollback(self) -> None:
+        if self._phase2_atomic_depth:
+            self._phase2_rollback_only = True
+            return
+        super().rollback()
+
+    @contextlib.contextmanager
+    def atomic(self) -> Iterator[None]:
+        outermost = self._phase2_atomic_depth == 0
+        if outermost:
+            super().execute("BEGIN IMMEDIATE")
+            self._phase2_rollback_only = False
+        self._phase2_atomic_depth += 1
+        try:
+            yield
+        except BaseException:
+            self._phase2_atomic_depth -= 1
+            if outermost:
+                super().rollback()
+                self._phase2_rollback_only = False
+            else:
+                self._phase2_rollback_only = True
+            raise
+        else:
+            self._phase2_atomic_depth -= 1
+            if outermost:
+                if self._phase2_rollback_only:
+                    super().rollback()
+                    self._phase2_rollback_only = False
+                    raise RuntimeError(
+                        "Phase 2 atomic transaction was marked rollback-only"
+                    )
+                super().commit()
 
 
 def validate_phase2_database_path(path: str | Path, workspace_root: str | Path) -> Path:
@@ -34,7 +86,7 @@ def validate_phase2_database_path(path: str | Path, workspace_root: str | Path) 
 def connect_phase2(path: str | Path, workspace_root: str | Path) -> sqlite3.Connection:
     target = validate_phase2_database_path(path, workspace_root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(target, timeout=30.0)
+    db = sqlite3.connect(target, timeout=30.0, factory=Phase2SQLiteConnection)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
     db.execute("PRAGMA journal_mode = WAL")

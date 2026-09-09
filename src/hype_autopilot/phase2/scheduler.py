@@ -28,6 +28,7 @@ def run_phase2_boundary(
 ) -> str:
     """Run one idempotent boundary and contain all operational failures."""
     pipeline.assert_active_manifest(manifest)
+    pipeline.recovery.recover_before(boundary)
     cycle_id = str(
         uuid5(
             NAMESPACE_URL,
@@ -38,6 +39,8 @@ def run_phase2_boundary(
         cycle_id, boundary, ObservationClass.SCORED_PROSPECTIVE.value
     )
     if existing is not None:
+        if existing["status"] == "RECOVERY_EXCLUDED":
+            return "RECOVERY_EXCLUDED"
         return "DUPLICATE_SKIPPED"
     try:
         result = pipeline.collect_reconstruct_and_score(
