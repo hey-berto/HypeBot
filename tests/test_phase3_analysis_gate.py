@@ -247,3 +247,30 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     }
     forbidden = {"pnl", "return", "expectancy", "profit", "sharpe"}
     assert not any(word in json.dumps(report).lower() for word in forbidden)
+
+    reset = activation + timedelta(minutes=30)
+    db = sqlite3.connect(database)
+    db.execute(
+        "CREATE TABLE phase2_outcome_exclusions(paper_trade_id TEXT PRIMARY KEY)"
+    )
+    db.execute("INSERT INTO phase2_outcome_exclusions VALUES ('t0')")
+    db.execute(
+        "CREATE TABLE phase2_evidence_windows(first_eligible_boundary TEXT NOT NULL)"
+    )
+    db.execute("INSERT INTO phase2_evidence_windows VALUES (?)", (reset.isoformat(),))
+    db.commit()
+    db.close()
+    reset_report = collect_operational_telemetry(database)
+    assert reset_report["research_activation_timestamp"] == activation.isoformat()
+    assert reset_report["effective_evidence_start"] == reset.isoformat()
+    assert reset_report["phase3_calendar_floor_anchor"] == reset.isoformat()
+    assert reset_report["evidence_clock_reset_applied"] is True
+    reset_rate = reset_report["coeligibility_rate_by_comparison"][
+        "LLM_V1__vs__QUANT_TREND_V1"
+    ]["daily"][0]
+    assert reset_rate == {
+        "day": "2026-09-04",
+        "boundaries": 2,
+        "coeligible": 2,
+        "rate": 1.0,
+    }

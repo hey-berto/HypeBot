@@ -29,6 +29,16 @@ def _read_only_connection(path: str | Path) -> sqlite3.Connection:
     return connection
 
 
+def _table_exists(db: sqlite3.Connection, name: str) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _missing_boundaries(values: list[datetime]) -> list[str]:
     if len(values) < 2:
         return []
@@ -60,11 +70,15 @@ def _supervisor_relaunches(path: str | Path | None, activation: datetime) -> int
 
 def _coeligibility_by_comparison(
     db: sqlite3.Connection,
+    *,
+    evidence_start: datetime,
 ) -> dict[str, dict[str, Any]]:
     snapshots = [
         datetime.fromisoformat(row["snapshot_timestamp"]).astimezone(UTC)
         for row in db.execute(
-            "SELECT snapshot_timestamp FROM decision_snapshots ORDER BY snapshot_timestamp"
+            "SELECT snapshot_timestamp FROM decision_snapshots "
+            "WHERE snapshot_timestamp>=? ORDER BY snapshot_timestamp",
+            (evidence_start.isoformat(),),
         )
     ]
     intervals: dict[str, list[tuple[datetime, datetime | None]]] = defaultdict(list)
@@ -73,13 +87,28 @@ def _coeligibility_by_comparison(
         "SUPPRESSED_INVALID_TARGET_AFTER_LATENCY",
         "SUPPRESSED_NO_ENTRY_DATA",
     }
+    excluded = (
+        {
+            row[0]
+            for row in db.execute(
+                "SELECT paper_trade_id FROM phase2_outcome_exclusions"
+            )
+        }
+        if _table_exists(db, "phase2_outcome_exclusions")
+        else set()
+    )
     for row in db.execute(
-        "SELECT strategy_id, signal_time, exit_time, last_processed_at, status "
+        "SELECT paper_trade_id,strategy_id, signal_time, exit_time, last_processed_at, status "
         "FROM paper_trades ORDER BY signal_time"
     ):
-        if row["status"] == "SUPPRESSED_POSITION_OPEN":
+        if (
+            row["paper_trade_id"] in excluded
+            or row["status"] == "SUPPRESSED_POSITION_OPEN"
+        ):
             continue
         start = datetime.fromisoformat(row["signal_time"]).astimezone(UTC)
+        if start < evidence_start:
+            continue
         end_text = row["exit_time"]
         if row["status"] in terminal and end_text is None:
             end_text = row["last_processed_at"]
@@ -131,9 +160,21 @@ def collect_operational_telemetry(
         activation = datetime.fromisoformat(
             manifest_row["activation_timestamp"]
         ).astimezone(UTC)
+        evidence_start = activation
+        if _table_exists(db, "phase2_evidence_windows"):
+            row = db.execute(
+                "SELECT first_eligible_boundary FROM phase2_evidence_windows "
+                "ORDER BY first_eligible_boundary DESC LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                evidence_start = datetime.fromisoformat(
+                    row["first_eligible_boundary"]
+                ).astimezone(UTC)
         frozen = manifest["frozen_contract"]
         cycles = db.execute(
-            "SELECT scheduled_at, status FROM research_cycles ORDER BY scheduled_at"
+            "SELECT scheduled_at, status FROM research_cycles "
+            "WHERE scheduled_at>=? ORDER BY scheduled_at",
+            (evidence_start.isoformat(),),
         ).fetchall()
         boundaries = [
             datetime.fromisoformat(row["scheduled_at"]).astimezone(UTC)
@@ -162,7 +203,7 @@ def collect_operational_telemetry(
                 (str(payload.get("model")), str(payload.get("model_version")))
             ] += 1
         expected_identity = (str(frozen["model"]), str(frozen["model_version"]))
-        coeligible = _coeligibility_by_comparison(db)
+        coeligible = _coeligibility_by_comparison(db, evidence_start=evidence_start)
         gaps = db.execute(
             "SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN recovered_at IS NULL THEN 1 ELSE 0 END) AS open "
@@ -178,6 +219,10 @@ def collect_operational_telemetry(
         return {
             "telemetry_scope": "OPERATIONAL_ONLY_NO_PERFORMANCE_FIELDS",
             "activation_timestamp": activation.isoformat(),
+            "research_activation_timestamp": activation.isoformat(),
+            "effective_evidence_start": evidence_start.isoformat(),
+            "phase3_calendar_floor_anchor": evidence_start.isoformat(),
+            "evidence_clock_reset_applied": evidence_start != activation,
             "latest_boundary": max(boundaries).isoformat() if boundaries else None,
             "cycle_status_counts": dict(Counter(row["status"] for row in cycles)),
             "missing_boundaries": _missing_boundaries(boundaries),
