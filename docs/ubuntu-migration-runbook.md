@@ -58,6 +58,10 @@ notifications for 15 minutes. An optional bearer token is read from the
 root-controlled environment and is never persisted or printed. Missing or
 failed external delivery fails the alert unit; it can never block or mutate the
 research worker because it runs only in the separate `OnFailure` service.
+The alert unit executes from the separately reviewed
+`/opt/hypebot/operations` checkout, so the Phase 2 research runtime may remain
+detached at the exact approved `0a9eb262bb77980106cbfad03336dd4209a34308`
+source pin while operational-gate tooling follows its own reviewed commit.
 
 Consistent backups use SQLite's backup API and fail if the destination exists:
 
@@ -118,6 +122,7 @@ Target Ubuntu 24.04 LTS with system time set to UTC and NTP synchronized.
 /opt/hypebot/phase1           # immutable Phase 1 worktree
 /opt/hypebot/phase2           # immutable Phase 2 worktree
 /opt/hypebot/phase3           # tooling/review worktree
+/opt/hypebot/operations       # reviewed operational-gate/alert tooling
 /opt/hypebot/*/.venv          # per-worktree Python environment
 /var/lib/hypebot/phase1       # mutable Phase 1 evidence
 /var/lib/hypebot/phase2       # mutable Phase 2 evidence

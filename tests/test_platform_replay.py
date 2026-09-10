@@ -43,6 +43,7 @@ def test_systemd_templates_are_inactive_and_phase2_fails_closed():
 def test_alert_template_uses_repository_adapter_and_fatal_debounce():
     alert = (ROOT / "deploy/systemd/hypebot-alert@.service.template").read_text()
     assert "hype-autopilot-alert" in alert
+    assert "/opt/hypebot/operations/.venv/bin/hype-autopilot-alert" in alert
     assert "--classification SERVICE_FAILED" in alert
     assert "--cooldown-seconds 900" in alert
     assert "__INSTALL_LOCAL_ALERT_COMMAND" not in alert

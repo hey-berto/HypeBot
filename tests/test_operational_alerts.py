@@ -1,5 +1,7 @@
 import json
+import threading
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -85,3 +87,47 @@ def test_required_external_delivery_fails_closed_without_endpoint(tmp_path):
         )
     row = json.loads((tmp_path / "alerts.jsonl").read_text())
     assert row["delivery"] == "FAILED_NO_ENDPOINT"
+
+
+def test_real_loopback_webhook_path_delivers_fixed_non_scored_payload(tmp_path):
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            size = int(self.headers["Content-Length"])
+            received.append(
+                {
+                    "authorization": self.headers.get("Authorization"),
+                    "body": self.rfile.read(size).decode("utf-8"),
+                }
+            )
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        result = dispatch_operational_alert(
+            component="hypebot-phase2.service",
+            classification="SCHEDULER_FATAL",
+            audit_log=tmp_path / "alerts.jsonl",
+            state_path=tmp_path / "state.json",
+            webhook_url=f"http://127.0.0.1:{server.server_port}/acceptance",
+            bearer_token="loopback-test-token",
+            observed_at=datetime(2026, 9, 10, 1, 0, tzinfo=UTC),
+            hostname="mmt2",
+        )
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+    assert result["delivery"] == "DELIVERED"
+    assert len(received) == 1
+    assert received[0]["authorization"] == "Bearer loopback-test-token"
+    body = json.loads(received[0]["body"])
+    assert body["classification"] == "SCHEDULER_FATAL"
+    assert "loopback-test-token" not in received[0]["body"]
+    assert "loopback-test-token" not in (tmp_path / "alerts.jsonl").read_text()

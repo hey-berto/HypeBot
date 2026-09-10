@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from hype_autopilot.hashing import canonical_json
 
@@ -87,6 +88,14 @@ def build_operational_alert(
 def _webhook_sender(
     url: str, payload: dict[str, Any], bearer_token: str | None, timeout: float
 ) -> None:
+    parsed = urlparse(url)
+    local_acceptance = parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+    }
+    if (parsed.scheme != "https" and not local_acceptance) or parsed.username:
+        raise ValueError("alert endpoint must be HTTPS or an isolated loopback test")
     headers = {"Content-Type": "application/json", "User-Agent": "hypebot-alert/1"}
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
