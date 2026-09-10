@@ -5,6 +5,8 @@ Wants=network-online.target time-sync.target
 Requires=hypebot-phase1.service
 ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002.grant.json
 OnFailure=hypebot-alert@%n.service
+StartLimitIntervalSec=900
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -17,8 +19,6 @@ ExecStartPre=/opt/hypebot/phase2/.venv/bin/hype-autopilot-tooling runtime-identi
 ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-phase2-supervisor --worker-executable /opt/hypebot/phase2/.venv/bin/hype-autopilot-phase2-worker --workspace /opt/hypebot/phase2 --config config/phase2/phase2_epoch_002.yaml --epoch-id phase2_epoch_002 --expected-commit __PHASE2_INTEGRATION_REVIEW_COMMIT__ --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3 --data-root /var/lib/hypebot/phase2 --worker-lease /run/lock/hypebot/phase2.writer.lock --supervisor-lease /run/lock/hypebot/phase2.supervisor.lock --grant /etc/hypebot/authorized/phase2-epoch-002.grant.json --event-log /var/log/hypebot/phase2-supervisor.jsonl --stdout-log /var/log/hypebot/phase2.stdout.log --stderr-log /var/log/hypebot/phase2.stderr.log
 Restart=on-failure
 RestartSec=15s
-StartLimitIntervalSec=900
-StartLimitBurst=5
 TimeoutStopSec=45
 KillMode=control-group
 KillSignal=SIGINT
