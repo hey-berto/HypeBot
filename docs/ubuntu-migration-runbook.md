@@ -4,6 +4,71 @@ Status: preparation only. These commands are **not authorized for active
 cutover**. Do not create an authorization sentinel, enable a service, stop the
 Mac writer or transfer the live database until a separate cutover instruction.
 
+## Operational integration candidate — 10 Sep 2026
+
+The review branch `codex/phase2-ubuntu-operational-integration` reconciles the
+exact Phase 2 recovery commit `33d410bd9e9da2401eef357a635349658982b7d7`
+and Phase 3 metadata commit `3b478af758940e53a102fca4a0c43c87d81dddb5`
+without rebasing either identity. It adds repository-owned, parameterized
+Phase 2 worker and single-writer supervisor entrypoints. The production unit
+remains a `.template` and contains the unresolved
+`__PHASE2_INTEGRATION_REVIEW_COMMIT__` pin, so it cannot be installed as an
+approved unit before independent review and explicit cutover authorization.
+
+Runtime dependencies for Ubuntu 24.04 / CPython 3.12 / x86_64 are frozen in
+`requirements/ubuntu-x86_64-py312.lock`. The lock was selected and downloaded
+on target host `mmt2`, matches the material versions in the Mac runtime, uses
+wheel artifacts only, and requires SHA-256 verification:
+
+```bash
+python3 -m venv /opt/hypebot/phase2/.venv
+/opt/hypebot/phase2/.venv/bin/pip install --require-hashes \
+  -r /opt/hypebot/phase2/requirements/ubuntu-x86_64-py312.lock
+/opt/hypebot/phase2/.venv/bin/pip install --no-deps /opt/hypebot/phase2
+```
+
+The second command installs only the reviewed local project after every third-
+party dependency has passed the hash gate. Do not use an unlocked `pip install
+.` for the service environment.
+
+Phase 2 mutable state may be outside the source checkout only when the worker
+is given the exact `--data-root`; path resolution rejects symlink escapes,
+sidecars, non-`.sqlite3` files, and any Phase 1 path. Kernel writer and
+supervisor leases live under `/run/lock/hypebot`, created by the committed
+tmpfiles rule. The worker has no Mac path and no `caffeinate` dependency.
+
+Activation is still a separate future action. A root-controlled, mode-0600,
+single-use receipt is converted once by `hype-autopilot-phase2-authorize` into
+a phrase-free durable grant; the original receipt is atomically renamed with a
+`.consumed` suffix. Service startup only reads a durable grant and verifies it
+against the immutable manifest already in the database. It cannot manufacture
+authorization. Do not create either file during non-scored acceptance.
+
+Operational monitoring uses `hype-autopilot-tooling phase2-health`. Its output
+is explicitly limited to process, boundary freshness, gaps, duplicates,
+integrity and FK status—never PnL, returns, win rate, or strategy performance.
+The five-minute timer and external `OnFailure` hook remain review templates.
+The alert command placeholder must be replaced with a credential-safe local
+notifier and reviewed before installation.
+
+Consistent backups use SQLite's backup API and fail if the destination exists:
+
+```bash
+hype-autopilot-tooling sqlite-backup \
+  --source /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3 \
+  --destination /var/lib/hypebot/phase2/backups/phase2_epoch_002.TIMESTAMP.sqlite3 \
+  --manifest /var/lib/hypebot/phase2/backups/phase2_epoch_002.TIMESTAMP.json
+hype-autopilot-tooling sqlite-verify-backup \
+  --backup /var/lib/hypebot/phase2/backups/phase2_epoch_002.TIMESTAMP.sqlite3 \
+  --sha256 SHA256_FROM_MANIFEST
+```
+
+A restore is never performed over an existing database. Stop and prove all
+writers absent, verify the backup hash/integrity/FKs, copy to a new staging
+name, verify again, reconcile critical counts and latest boundary, and only
+then atomically rename while the destination is absent. Starting a restored
+writer remains a separately authorized cutover action.
+
 ## Current-host audit — 6 Sep 2026
 
 The read-only identity audit found:

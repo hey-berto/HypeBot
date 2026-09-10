@@ -13,14 +13,19 @@ tracks:
     cadence_minutes: 15
     environment_variable_names: [HYPE_AUTOPILOT_DB, HYPE_AUTOPILOT_CONFIG, HYPE_AUTOPILOT_EPOCH]
   phase2:
-    repository_mac: /Users/berto/Documents/ChatGPT/HypeBot-phase2
-    expected_commit: 0322e53ba55df1c9ad44286616cd71bd2e0700c6
+    repository_mac: /Users/berto/Documents/ChatGPT/HypeBot-ubuntu-integration
+    reviewed_recovery_parent: 33d410bd9e9da2401eef357a635349658982b7d7
+    reviewed_phase3_parent: 3b478af758940e53a102fca4a0c43c87d81dddb5
+    expected_integration_commit: REVIEW_BRANCH_HEAD_MUST_BE_PINNED_AFTER_APPROVAL
     config: config/phase2/phase2_epoch_002.yaml
     database: data/phase2/phase2_epoch_002.sqlite3
-    scheduler_entrypoint_mac: "/Users/berto/Documents/ChatGPT/HypeBot-phase2/.venv/bin/python '/Users/berto/Library/Application Support/HYPE Autopilot/phase2-supervisor.py' --mode production"
+    scheduler_entrypoint: hype-autopilot-phase2-supervisor
     supervisor_sha256: 598d329e361e1fc1c7248d6c136140ed117acde1f9fad4178c9e26bec2dfccb0
     worker_sha256: 8fe30d47f10419f1580657e0fd836e1861f9b8d3f01a9e861696dd17a822ca5e
-    scheduler_entrypoint_ubuntu: BLOCKED_UNTIL_EXTERNAL_MAC_ARTIFACTS_ARE_PARAMETERIZED_AND_REVIEWED
+    scheduler_entrypoint_ubuntu: REVIEW_CANDIDATE_NOT_AUTHORIZED_FOR_CUTOVER
+    ubuntu_dependency_lock: requirements/ubuntu-x86_64-py312.lock
+    ubuntu_database_root: /var/lib/hypebot/phase2
+    ubuntu_lock_root: /run/lock/hypebot
     mac_supervisor: NOT_CURRENTLY_LOADED_AT_AUDIT
     cadence_minutes: 15
     environment_variable_names: [OPENAI_API_KEY]
