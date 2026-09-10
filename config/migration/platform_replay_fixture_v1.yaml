@@ -1,0 +1,17 @@
+fixture_version: MAC_UBUNTU_PLATFORM_REPLAY_V1
+snapshot_at: "2026-03-05T12:00:00+00:00"
+candle_wave_modulus: 7
+candle_linear_step: 0.01
+candle_wave_step: 0.02
+sources:
+  - {symbol: HYPE, interval: 1m, count: 180, minutes: 1, base: 100.0}
+  - {symbol: HYPE, interval: 5m, count: 180, minutes: 5, base: 100.0}
+  - {symbol: HYPE, interval: 15m, count: 400, minutes: 15, base: 100.0}
+  - {symbol: HYPE, interval: 1h, count: 1500, minutes: 60, base: 100.0}
+  - {symbol: HYPE, interval: 4h, count: 400, minutes: 240, base: 100.0}
+  - {symbol: BTC, interval: 15m, count: 400, minutes: 15, base: 70000.0}
+  - {symbol: BTC, interval: 1h, count: 1500, minutes: 60, base: 70000.0}
+  - {symbol: BTC, interval: 4h, count: 400, minutes: 240, base: 70000.0}
+asset_context_count: 100
+funding_count: 168
+observation_class: WARMUP

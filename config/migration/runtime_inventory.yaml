@@ -1,0 +1,32 @@
+inventory_version: HYPE_RUNTIME_INVENTORY_V1
+target:
+  ubuntu_release: "24.04 LTS"
+  system_timezone: UTC
+tracks:
+  phase1:
+    repository_mac: /Users/berto/Documents/ChatGPT/HypeBot
+    expected_commit: e4305c35fd4e73a23ffab83bdf1fa1502e24709c
+    config: config/epoch_001.yaml
+    database: data/epoch_001.sqlite3
+    scheduler_entrypoint: "hype-autopilot --config config/base.yaml --epoch config/epoch_001.yaml schedule"
+    mac_supervisor: com.hypeautopilot.epoch1
+    cadence_minutes: 15
+    environment_variable_names: [HYPE_AUTOPILOT_DB, HYPE_AUTOPILOT_CONFIG, HYPE_AUTOPILOT_EPOCH]
+  phase2:
+    repository_mac: /Users/berto/Documents/ChatGPT/HypeBot-phase2
+    expected_commit: 0322e53ba55df1c9ad44286616cd71bd2e0700c6
+    config: config/phase2/phase2_epoch_002.yaml
+    database: data/phase2/phase2_epoch_002.sqlite3
+    scheduler_entrypoint_mac: "/Users/berto/Documents/ChatGPT/HypeBot-phase2/.venv/bin/python '/Users/berto/Library/Application Support/HYPE Autopilot/phase2-supervisor.py' --mode production"
+    supervisor_sha256: 598d329e361e1fc1c7248d6c136140ed117acde1f9fad4178c9e26bec2dfccb0
+    worker_sha256: 8fe30d47f10419f1580657e0fd836e1861f9b8d3f01a9e861696dd17a822ca5e
+    scheduler_entrypoint_ubuntu: BLOCKED_UNTIL_EXTERNAL_MAC_ARTIFACTS_ARE_PARAMETERIZED_AND_REVIEWED
+    mac_supervisor: NOT_CURRENTLY_LOADED_AT_AUDIT
+    cadence_minutes: 15
+    environment_variable_names: [OPENAI_API_KEY]
+controls:
+  database_access_during_inventory: READ_ONLY_IMMUTABLE
+  database_transfer: SQLITE_CONSISTENT_BACKUP_ONLY
+  concurrent_epoch_writers_allowed: false
+  backfill_allowed: false
+  service_enablement_authorized: false

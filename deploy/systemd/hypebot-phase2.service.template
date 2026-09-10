@@ -1,0 +1,29 @@
+[Unit]
+Description=HYPE Autopilot Phase 2 scheduler (incomplete template; do not install)
+After=network-online.target time-sync.target hypebot-phase1.service
+Wants=network-online.target time-sync.target
+ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002-cutover
+
+[Service]
+Type=simple
+User=hypebot
+Group=hypebot
+WorkingDirectory=/opt/hypebot/phase2
+EnvironmentFile=/etc/hypebot/phase2.env
+ExecStartPre=/opt/hypebot/tooling-venv/bin/hype-autopilot-tooling runtime-identity --repo /opt/hypebot/phase2 --expected-commit 0322e53ba55df1c9ad44286616cd71bd2e0700c6 --config config/phase2/phase2_epoch_002.yaml --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3
+ExecStart=__RESOLVE_APPROVED_PHASE2_PRODUCTION_SUPERVISOR_COMMAND_BEFORE_INSTALL__
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=900
+StartLimitBurst=5
+TimeoutStopSec=45
+KillSignal=SIGINT
+StandardOutput=append:/var/log/hypebot/phase2.log
+StandardError=append:/var/log/hypebot/phase2.err.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hypebot/phase2 /var/log/hypebot
+
+[Install]
+WantedBy=multi-user.target

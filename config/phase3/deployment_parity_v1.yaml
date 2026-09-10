@@ -1,0 +1,43 @@
+contract_version: DEPLOYMENT_PARITY_CONTRACT_V1_PROPOSAL
+status: DESIGN_ONLY_NOT_EXECUTABLE
+network: testnet
+minimum_consecutive_executions: 20
+maximum_unresolved_reconciliation_mismatches: 0
+protective_exit_confirmation_required: true
+maximum_silent_partial_fill_or_cancel_divergences: 0
+tolerances:
+  intended_vs_observed_quantity_relative: 0.001
+  intended_vs_observed_quantity_absolute_lots: 1
+  median_entry_slippage_error_bps: 3.0
+  p95_entry_slippage_error_bps: 15.0
+  maximum_single_entry_slippage_error_bps: 35.0
+  fee_variance_bps_of_notional: 0.5
+  funding_variance_bps_of_notional_per_settlement: 0.5
+  p95_intent_to_confirmed_exchange_state_seconds: 5.0
+required_measurements:
+  - intended_vs_observed_entry_fill
+  - intended_vs_observed_quantity
+  - slippage
+  - fee_and_funding_treatment
+  - partial_fills
+  - cancel_replace
+  - reduce_only_semantics
+  - stop_tp_placement_and_persistence
+  - post_order_position_reconciliation
+  - restart_reconnect_state
+  - intent_to_confirmed_state_latency
+identity_fields:
+  - strategy_commit_and_config
+  - feature_and_snapshot_schema
+  - optional_llm_prompt_output_schema_and_model
+  - simulator_version
+  - risk_policy_hash
+  - execution_policy_hash
+  - hyperliquid_adapter_and_sdk_version
+  - network_identity
+  - wallet_subaccount_agent_permission_model
+  - stop_tp_reduce_only_policy_version
+  - deployment_artifact_hash
+permission_model: TRADE_ONLY_NO_WITHDRAWAL_PROPOSED
+formal_testnet_sample_authorized: false
+mainnet_capability: false
