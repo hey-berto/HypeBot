@@ -377,6 +377,10 @@ def run_scheduler_acceptance(
         "SELECT timestamp, runner_status, reason_code, payload_json FROM llm_decisions "
         "ORDER BY timestamp"
     ).fetchall()
+    attempts = repository.db.execute(
+        "SELECT input_snapshot_hash,attempt,provider_status,error_code "
+        "FROM llm_invocation_attempts ORDER BY started_at,attempt"
+    ).fetchall()
     strategy_counts = repository.db.execute(
         "SELECT snapshot_hash, COUNT(*) AS decision_count, "
         "SUM(CASE WHEN strategy_id LIKE 'HYBRID_%' THEN 1 ELSE 0 END) AS hybrid_count "
@@ -397,6 +401,7 @@ def run_scheduler_acceptance(
             "post_failure_next_boundary": second_status,
         },
         "provider_calls": provider.calls,
+        "llm_attempts": [dict(row) for row in attempts],
         "cycles": [
             {
                 "scheduled_for": row["scheduled_at"],

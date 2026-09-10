@@ -39,9 +39,14 @@ def test_non_scored_scheduler_acceptance_contains_failure_and_is_idempotent():
             "restart_duplicate": "DUPLICATE_SKIPPED",
             "post_failure_next_boundary": "COMPLETE",
         }
-        assert result["provider_calls"] == 2
-        assert [item["reason_code"] for item in result["llm_decisions"]] == [
+        assert result["provider_calls"] == 3
+        assert [item["provider_status"] for item in result["llm_attempts"]] == [
             "TIMEOUT",
+            "VALID",
+            "VALID",
+        ]
+        assert [item["reason_code"] for item in result["llm_decisions"]] == [
+            "NONE",
             "NONE",
         ]
         assert all(item["decision_count"] == 5 for item in result["strategy_counts"])
