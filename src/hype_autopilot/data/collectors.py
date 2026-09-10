@@ -8,7 +8,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
 from hype_autopilot.data.hyperliquid_client import HyperliquidMarketDataClient
-from hype_autopilot.data.models import AssetContext, BboObservation, Candle, ObservationClass
+from hype_autopilot.data.models import (
+    AssetContext,
+    BboObservation,
+    Candle,
+    ObservationClass,
+)
 from hype_autopilot.data.repository import Repository
 from hype_autopilot.storage.db import connect
 
@@ -139,8 +144,17 @@ class MarketDataCollector:
 class ResilientWebsocketCollector:
     """Official-SDK websocket loop with reconnect and REST gap recovery."""
 
-    def __init__(self, repository: Repository, rest_collector: MarketDataCollector,
-                 base_url: str = "https://api.hyperliquid.xyz") -> None:
+    def __init__(
+        self,
+        repository: Repository,
+        rest_collector: MarketDataCollector,
+        base_url: str = "https://api.hyperliquid.xyz",
+        *,
+        info_factory: Callable[[str], Any] | None = None,
+        stream_rest_factory: Callable[[Repository], Any] | None = None,
+        poll_seconds: float = 1.0,
+        backoff_schedule: tuple[float, ...] = (1, 2, 4, 8, 16, 32, 60),
+    ) -> None:
         self.repository = repository
         self.rest_collector = rest_collector
         self.base_url = base_url
@@ -148,52 +162,102 @@ class ResilientWebsocketCollector:
         self.database_path = row["file"] if row and row["file"] else None
         self._stream_repository: Repository | None = None
         self._lock = threading.RLock()
+        self.info_factory = info_factory or self._default_info_factory
+        self.stream_rest_factory = stream_rest_factory
+        self.poll_seconds = poll_seconds
+        if not backoff_schedule or any(value <= 0 for value in backoff_schedule):
+            raise ValueError("websocket backoff schedule must contain positive values")
+        self.backoff_schedule = backoff_schedule
+
+    @staticmethod
+    def _default_info_factory(base_url: str) -> Any:
+        from hyperliquid.info import Info
+
+        return Info(base_url=base_url, skip_ws=False)
 
     def run_forever(self, stop: threading.Event | None = None) -> None:  # pragma: no cover - operational loop
         stop = stop or threading.Event()
-        backoff = 1.0
+        backoff_index = 0
         if not self.database_path:
             raise RuntimeError("websocket collector requires a file-backed SQLite database")
         stream_db = connect(self.database_path, allow_cross_thread=True)
         stream_repo = Repository(stream_db)
         stream_repo.initialize()
         self._stream_repository = stream_repo
-        stream_rest = MarketDataCollector(
-            stream_repo, HyperliquidMarketDataClient(self.base_url), symbols=self.rest_collector.symbols
+        stream_rest = (
+            self.stream_rest_factory(stream_repo)
+            if self.stream_rest_factory is not None
+            else MarketDataCollector(
+                stream_repo,
+                HyperliquidMarketDataClient(self.base_url),
+                symbols=self.rest_collector.symbols,
+            )
         )
-        while not stop.is_set():
-            info = None
-            try:
-                from hyperliquid.info import Info
-                info = Info(base_url=self.base_url, skip_ws=False)
-                for symbol, interval in WARMUP_DAYS:
-                    info.subscribe({"type": "candle", "coin": symbol, "interval": interval}, self._handle)
-                for feed in ("bbo", "activeAssetCtx"):
-                    info.subscribe({"type": feed, "coin": "HYPE"}, self._handle)
-                with self._lock:
-                    stream_repo.health("websocket", "CONNECTED", {"subscriptions": len(WARMUP_DAYS) + 2})
-                backoff = 1.0
-                while not stop.wait(1.0):
-                    manager = info.ws_manager
-                    if manager is None or not manager.is_alive():
-                        raise ConnectionError("official SDK websocket thread stopped")
-            except Exception as exc:
-                with self._lock:
-                    stream_repo.health("websocket", "DISCONNECTED", {"error": repr(exc), "retry_seconds": backoff})
+        try:
+            while not stop.is_set():
+                info = None
+                retry_seconds = self.backoff_schedule[
+                    min(backoff_index, len(self.backoff_schedule) - 1)
+                ]
                 try:
-                    stream_rest.collect_incremental()
-                    stream_rest.recover_gaps()
-                except Exception as recovery_exc:
+                    info = self.info_factory(self.base_url)
+                    for symbol, interval in WARMUP_DAYS:
+                        info.subscribe({"type": "candle", "coin": symbol, "interval": interval}, self._handle)
+                    for feed in ("bbo", "activeAssetCtx"):
+                        info.subscribe({"type": feed, "coin": "HYPE"}, self._handle)
                     with self._lock:
-                        stream_repo.health("websocket", "RECOVERY_FAILED", {"error": repr(recovery_exc)})
-                stop.wait(backoff)
-                backoff = min(backoff * 2.0, 60.0)
-            finally:
-                if info is not None:
+                        stream_repo.health("websocket", "CONNECTED", {"subscriptions": len(WARMUP_DAYS) + 2})
+                    backoff_index = 0
+                    retry_seconds = self.backoff_schedule[0]
+                    while not stop.wait(self.poll_seconds):
+                        manager = info.ws_manager
+                        if manager is None or not manager.is_alive():
+                            raise ConnectionError("official SDK websocket thread stopped")
+                except Exception as exc:  # noqa: BLE001 -- SDK/network boundary must recover
+                    with self._lock:
+                        stream_repo.health(
+                            "websocket",
+                            "DISCONNECTED",
+                            {
+                                "error": repr(exc),
+                                "error_class": type(exc).__name__,
+                                "retry_seconds": retry_seconds,
+                                "backoff_index": backoff_index,
+                            },
+                        )
                     try:
-                        info.disconnect_websocket()
-                    except Exception:
-                        pass
+                        stream_rest.collect_incremental()
+                        stream_rest.recover_gaps()
+                        with self._lock:
+                            stream_repo.health(
+                                "websocket",
+                                "REST_RECOVERY_COMPLETE",
+                                {"retry_seconds": retry_seconds},
+                            )
+                    except Exception as recovery_exc:  # noqa: BLE001 -- record any REST recovery failure
+                        with self._lock:
+                            stream_repo.health(
+                                "websocket",
+                                "RECOVERY_FAILED",
+                                {
+                                    "error": repr(recovery_exc),
+                                    "error_class": type(recovery_exc).__name__,
+                                },
+                            )
+                    if stop.wait(retry_seconds):
+                        break
+                    backoff_index = min(
+                        backoff_index + 1, len(self.backoff_schedule) - 1
+                    )
+                finally:
+                    if info is not None:
+                        try:
+                            info.disconnect_websocket()
+                        except Exception:  # noqa: BLE001 -- best-effort SDK cleanup
+                            LOGGER.debug("websocket disconnect cleanup failed", exc_info=True)
+        finally:
+            self._stream_repository = None
+            stream_db.close()
 
     def _handle(self, message: dict[str, Any]) -> None:
         try:
