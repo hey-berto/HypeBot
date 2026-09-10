@@ -4,6 +4,7 @@ from hype_autopilot.platform_replay import platform_replay_json, run_platform_re
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "config" / "migration" / "platform_replay_fixture_v1.yaml"
+REVIEWED_COMMIT = "0a9eb262bb77980106cbfad03336dd4209a34308"
 
 
 def test_platform_replay_is_byte_deterministic_and_complete():
@@ -29,10 +30,20 @@ def test_systemd_templates_are_inactive_and_phase2_fails_closed():
     assert "hype-autopilot-phase2-supervisor" in phase2
     assert "hype-autopilot-phase2-worker" in phase2
     assert "/usr/bin/caffeinate" not in phase2
-    assert "__PHASE2_INTEGRATION_REVIEW_COMMIT__" in phase2
+    assert "__PHASE2_INTEGRATION_REVIEW_COMMIT__" not in phase2
+    assert phase2.count(f"--expected-commit {REVIEWED_COMMIT}") == 2
     assert (
         "ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002.grant.json"
         in phase2
     )
     assert not (ROOT / "deploy/systemd/hypebot-phase1.service").exists()
     assert not (ROOT / "deploy/systemd/hypebot-phase2.service").exists()
+
+
+def test_alert_template_uses_repository_adapter_and_fatal_debounce():
+    alert = (ROOT / "deploy/systemd/hypebot-alert@.service.template").read_text()
+    assert "hype-autopilot-alert" in alert
+    assert "--classification SERVICE_FAILED" in alert
+    assert "--cooldown-seconds 900" in alert
+    assert "__INSTALL_LOCAL_ALERT_COMMAND" not in alert
+    assert "ReadWritePaths=/var/log/hypebot /var/lib/hypebot/alerts" in alert

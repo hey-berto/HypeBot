@@ -27,6 +27,7 @@ hype-autopilot-phase2-worker = "hype_autopilot.phase2.service:worker_main"
 hype-autopilot-phase2-supervisor = "hype_autopilot.phase2.service:supervisor_main"
 hype-autopilot-phase2-authorize = "hype_autopilot.phase2.service:authorization_main"
 hype-autopilot-tooling = "hype_autopilot.tooling_cli:main"
+hype-autopilot-alert = "hype_autopilot.alerts:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hype_autopilot"]

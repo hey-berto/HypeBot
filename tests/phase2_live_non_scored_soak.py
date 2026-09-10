@@ -20,6 +20,18 @@ from hype_autopilot.phase2.supervision import (
 from tests.phase2_recovery_harness import create_case, inspect_case, run_worker
 
 ROOT = Path(__file__).resolve().parents[1]
+MINIMUM_BOUNDARIES = 24
+MINIMUM_CONTINUOUS_DURATION = timedelta(hours=6)
+
+
+def acceptance_threshold_met(
+    *, prepared_at: datetime, observed_at: datetime, completed_boundaries: int
+) -> bool:
+    """The pre-cutover soak must satisfy both conservative lower bounds."""
+    return (
+        completed_boundaries >= MINIMUM_BOUNDARIES
+        and observed_at - prepared_at >= MINIMUM_CONTINUOUS_DURATION
+    )
 
 
 def append(path: Path, value: dict[str, object]) -> None:
@@ -28,9 +40,12 @@ def append(path: Path, value: dict[str, object]) -> None:
 
 
 def prepare(case: Path, boundaries: int) -> None:
-    if boundaries < 3:
-        raise ValueError("live soak requires at least three consecutive boundaries")
+    if boundaries < MINIMUM_BOUNDARIES:
+        raise ValueError(
+            "live soak requires at least 24 consecutive scheduled boundaries"
+        )
     first = planned_phase2_boundary(datetime.now(UTC))
+    prepared_at = datetime.now(UTC)
     metadata = create_case(case, first_boundary=first)
     (case / "LIVE_SOAK.json").write_text(
         json.dumps(
@@ -40,7 +55,23 @@ def prepare(case: Path, boundaries: int) -> None:
                 "provider": "deterministic_offline_no_network",
                 "first_boundary": first.isoformat(),
                 "boundary_count": boundaries,
-                "prepared_at": datetime.now(UTC).isoformat(),
+                "prepared_at": prepared_at.isoformat(),
+                "minimum_acceptance_boundaries": MINIMUM_BOUNDARIES,
+                "minimum_continuous_seconds": int(
+                    MINIMUM_CONTINUOUS_DURATION.total_seconds()
+                ),
+                "required_invariants": [
+                    "ZERO_DUPLICATES",
+                    "ZERO_UNEXPLAINED_MISSING_BOUNDARIES",
+                    "ZERO_FOREIGN_KEY_VIOLATIONS",
+                    "SQLITE_QUICK_AND_INTEGRITY_OK",
+                    "EXACTLY_ONE_EFFECTIVE_WRITER",
+                    "SUPERVISOR_AND_SCHEDULER_CONTINUOUSLY_HEALTHY",
+                    "ALL_APPLICABLE_LLM_OUTPUT_V2_VALID",
+                    "ALL_RAW_RESPONSE_HASHES_MATCH",
+                    "BOUNDED_RETRY_AND_BACKOFF",
+                    "NO_UNEXPLAINED_PROCESS_DEATH_OR_RESTART_LOOP",
+                ],
                 "base_metadata": metadata,
             },
             indent=2,
@@ -80,7 +111,24 @@ def worker(case: Path) -> None:
                     "result": result,
                 },
             )
+        prepared_at = datetime.fromisoformat(plan["prepared_at"])
+        remaining = (
+            prepared_at + MINIMUM_CONTINUOUS_DURATION - datetime.now(UTC)
+        ).total_seconds()
+        if remaining > 0:
+            time.sleep(remaining)
         final = inspect_case(case)
+        final["soak_acceptance"] = {
+            "threshold_met": acceptance_threshold_met(
+                prepared_at=prepared_at,
+                observed_at=datetime.now(UTC),
+                completed_boundaries=len(final["cycles"]),
+            ),
+            "minimum_boundaries": MINIMUM_BOUNDARIES,
+            "minimum_continuous_seconds": int(
+                MINIMUM_CONTINUOUS_DURATION.total_seconds()
+            ),
+        }
         (case / "LIVE_SOAK_COMPLETE.json").write_text(
             json.dumps(final, indent=2, sort_keys=True) + "\n"
         )

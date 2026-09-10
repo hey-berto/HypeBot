@@ -11,9 +11,11 @@ exact Phase 2 recovery commit `33d410bd9e9da2401eef357a635349658982b7d7`
 and Phase 3 metadata commit `3b478af758940e53a102fca4a0c43c87d81dddb5`
 without rebasing either identity. It adds repository-owned, parameterized
 Phase 2 worker and single-writer supervisor entrypoints. The production unit
-remains a `.template` and contains the unresolved
-`__PHASE2_INTEGRATION_REVIEW_COMMIT__` pin, so it cannot be installed as an
-approved unit before independent review and explicit cutover authorization.
+remains an uninstalled `.template` and pins the independently reviewed source
+identity `0a9eb262bb77980106cbfad03336dd4209a34308` in both `ExecStartPre` and
+the supervisor command. The runtime-identity preflight and worker runtime both
+fail closed if the actual checkout differs. This pin does not authorize
+installation, activation or cutover.
 
 Runtime dependencies for Ubuntu 24.04 / CPython 3.12 / x86_64 are frozen in
 `requirements/ubuntu-x86_64-py312.lock`. The lock was selected and downloaded
@@ -47,9 +49,15 @@ authorization. Do not create either file during non-scored acceptance.
 Operational monitoring uses `hype-autopilot-tooling phase2-health`. Its output
 is explicitly limited to process, boundary freshness, gaps, duplicates,
 integrity and FK status—never PnL, returns, win rate, or strategy performance.
-The five-minute timer and external `OnFailure` hook remain review templates.
-The alert command placeholder must be replaced with a credential-safe local
-notifier and reviewed before installation.
+The five-minute timer and external `OnFailure` hook remain uninstalled review
+templates. The repository-owned `hype-autopilot-alert` adapter accepts only a
+small allowlist of fatal infrastructure classifications, emits a fixed
+performance-free payload, appends a local audit row, sends to the HTTPS webhook
+in `HYPEBOT_ALERT_WEBHOOK_URL`, and suppresses repeated component/classification
+notifications for 15 minutes. An optional bearer token is read from the
+root-controlled environment and is never persisted or printed. Missing or
+failed external delivery fails the alert unit; it can never block or mutate the
+research worker because it runs only in the separate `OnFailure` service.
 
 Consistent backups use SQLite's backup API and fail if the destination exists:
 
@@ -170,8 +178,8 @@ Before cutover, replace the Mac-only absolute paths and `caffeinate` dependency
 in the external Phase 2 supervisor/worker through a separately reviewed
 operational-only change. The source artifacts and hashes are recorded in
 `config/migration/runtime_inventory.yaml`. The Phase 2 systemd template is
-intentionally invalid until the Ubuntu artifacts pass the non-scored restart,
-identity and no-backfill tests and their hashes are frozen.
+explicitly pinned but remains inactive until Ubuntu artifacts pass every
+non-scored gate and a separate cutover authorization is issued.
 
 ## Mac ↔ Ubuntu deterministic replay gate
 
@@ -207,6 +215,33 @@ whether a host move remains operational-only. If a scored timing input or
 entry-price selection changes, create a new prospective experiment identity;
 do not pool silently into the old epoch.
 
+## Mandatory Ubuntu non-scored soak gate
+
+Before any scored cutover review, run the externally supervised non-scored
+soak for **at least 24 consecutive scheduled boundaries and at least 6
+continuous hours**. Both lower bounds must pass; the longer effective threshold
+governs. The committed soak harness refuses a boundary count below 24 and does
+not complete before six hours have elapsed.
+
+Acceptance requires all of the following, with no waiver or shortened run:
+
+- zero duplicate cycle, snapshot, strategy/detector decision, LLM decision,
+  LLM invocation-attempt/raw-response, paper-trade, order or fill keys;
+- zero missing quarter-hour boundaries unless each is covered by an explicit,
+  immutable recovery event;
+- zero foreign-key violations and SQLite `quick_check` plus `integrity_check`
+  equal to `ok`;
+- exactly one effective writer for the entire run, with supervisor and scheduler
+  health continuously valid;
+- every applicable completed LLM result validates as `LLM_OUTPUT_V2`, every raw
+  response is retained, and every recomputed SHA-256 equals its stored hash;
+- retries and WebSocket reconnects remain inside the pinned bounded policies;
+- no unexplained process death, restart loop, historical backfill, or scored
+  evidence capability.
+
+The present task prepares and tests this policy only. It does not run or
+authorize the six-hour soak and it never uses the production epoch database.
+
 ## Authorized cutover procedure (future)
 
 1. Select and record a future quarter-hour boundary and both host identities.
@@ -235,14 +270,43 @@ do not pool silently into the old epoch.
 The transfer artifact hash, old-writer stop timestamp, Ubuntu start timestamp,
 first new boundary and any explicit gap become an immutable operational event.
 
-## Rollback
+## Scored-cutover rollback gate
 
-Stop and prove the Ubuntu writer absent before any Mac restart. Preserve the
-Ubuntu database as an immutable incident/cutover artifact. Transfer it back
-through the same backup/hash/integrity process only if the approved rollback
-runbook says the Mac continues the same epoch. Never start both writers and
-never overwrite the original pre-cutover backup. A short recorded gap is safer
-than overlap or fabricated evidence.
+Rollback is mandatory if any of these triggers occurs after a future authorized
+cutover: an unexpected duplicate writer; Git/config/database-schema identity
+mismatch; SQLite integrity or FK failure; an unrecoverable scheduled-boundary
+gap; supervisor restart loop or circuit-breaker trip; invalid or unverifiable
+raw-response audit chain; systematic `LLM_OUTPUT_V2` contract failures;
+evidence-clock/pre-activation/backfill violation; or any unexpected mutation of
+historical scored evidence. A single contained provider transport failure is
+not by itself a rollback trigger when the frozen retry and rejection path works.
+
+Required order—never reverse it:
+
+1. Fail closed and stop the Ubuntu service. Record the trigger and UTC stop
+   timestamp without modifying historical rows.
+2. Prove the Ubuntu supervisor and worker are absent using `systemctl`, PID/
+   process-start/process-group evidence, writer-lock acquisition, and two
+   independent process checks. Do not proceed while any writer or DB holder
+   remains.
+3. Preserve the Ubuntu DB, WAL/SHM if present, journal, alert audit and runtime
+   identity as immutable incident evidence. Create an online backup only after
+   the writer is proven stopped; hash it and verify integrity/FKs. Never repair,
+   overwrite, or reuse the pre-cutover source backup.
+4. Determine whether same-epoch continuation is scientifically valid. Any
+   historical mutation, evidence-clock violation, ambiguous dual-writer window,
+   or research-identity change requires a new review and may require a new epoch;
+   it must not be hidden by a restart.
+5. Only after a separately approved rollback authorization may a same-epoch
+   recovery artifact be transferred through the hash/integrity/count
+   reconciliation procedure to the Mac. Keep the Mac service disabled until the
+   Ubuntu writer-death proof is attached to the incident record.
+6. Start at the next future quarter-hour only, record the operational gap, and
+   backfill nothing. Reapply the first-four-boundary startup gate before declaring
+   recovery healthy.
+
+No scored rollback, database transfer, service stop/start, or sentinel/grant
+change is executed by this runbook update.
 
 ## Post-migration acceptance checklist
 

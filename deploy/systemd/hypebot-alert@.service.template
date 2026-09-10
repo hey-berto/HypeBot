@@ -1,12 +1,19 @@
 [Unit]
 Description=HYPE Autopilot failure notification hook for %i
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=hypebot
 EnvironmentFile=-/etc/hypebot/alert.env
-ExecStart=__INSTALL_LOCAL_ALERT_COMMAND_THAT_DOES_NOT_PRINT_ENVIRONMENT__ %i
+StateDirectory=hypebot/alerts
+LogsDirectory=hypebot
+ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-alert --component %i --classification SERVICE_FAILED --audit-log /var/log/hypebot/alerts.jsonl --state /var/lib/hypebot/alerts/state.json --cooldown-seconds 900
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/log/hypebot /var/lib/hypebot/alerts

@@ -4,6 +4,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from hype_autopilot.migration import inspect_runtime_identity, sqlite_read_only_identity
 
 
@@ -60,3 +62,11 @@ def test_runtime_inventory_fails_on_source_drift_and_records_clean_state(tmp_pat
     assert identity["tracked_worktree_clean"] is True
     assert identity["database"]["integrity"] == "ok"
     assert len(identity["identity_hash"]) == 64
+    with pytest.raises(RuntimeError, match="source drift"):
+        inspect_runtime_identity(
+            repo,
+            expected_commit="0" * 40,
+            config_path="config.yaml",
+            database_path="evidence.sqlite3",
+            packages=(),
+        )

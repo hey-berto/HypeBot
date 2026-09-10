@@ -10,7 +10,11 @@ from hype_autopilot.phase2.operations import (
     sqlite_consistent_backup,
     verify_backup,
 )
-from hype_autopilot.platform_replay import platform_replay_json
+from hype_autopilot.platform_replay import (
+    export_historical_hype_fixture,
+    historical_hype_replay_json,
+    platform_replay_json,
+)
 from hype_autopilot.review_bundle import load_review_bundle_request, write_review_bundle
 
 
@@ -36,6 +40,17 @@ def main(argv: list[str] | None = None) -> int:
         "--fixture", default="config/migration/platform_replay_fixture_v1.yaml"
     )
     replay.add_argument("--output")
+
+    historical_export = sub.add_parser("historical-replay-export")
+    historical_export.add_argument("--root", default=".")
+    historical_export.add_argument("--database", required=True)
+    historical_export.add_argument("--boundary", required=True)
+    historical_export.add_argument("--output", required=True)
+
+    historical_replay = sub.add_parser("historical-replay")
+    historical_replay.add_argument("--root", default=".")
+    historical_replay.add_argument("--fixture", required=True)
+    historical_replay.add_argument("--output")
 
     health = sub.add_parser("phase2-health")
     health.add_argument("--database", required=True)
@@ -71,6 +86,30 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
     elif args.command == "platform-replay":
         result = platform_replay_json(args.root, args.fixture)
+        if args.output:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(result + "\n", encoding="utf-8")
+            print(output)
+        else:
+            print(result)
+    elif args.command == "historical-replay-export":
+        from datetime import datetime
+
+        payload = export_historical_hype_fixture(
+            args.root,
+            args.database,
+            datetime.fromisoformat(args.boundary),
+        )
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        print(output)
+    elif args.command == "historical-replay":
+        result = historical_hype_replay_json(args.root, args.fixture)
         if args.output:
             output = Path(args.output)
             output.parent.mkdir(parents=True, exist_ok=True)
