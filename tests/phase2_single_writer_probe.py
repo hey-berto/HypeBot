@@ -81,6 +81,7 @@ def supervisor(root: Path) -> None:
         event_sink=sink,
         environment=environment,
         restart_delay_seconds=0.05,
+        worker_lease_path=root / "writer.lock",
     )
     instance.run()
 

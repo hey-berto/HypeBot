@@ -18,6 +18,40 @@ class LeaseAlreadyOwned(RuntimeError):
     """Raised when a second authoritative Phase 2 process is attempted."""
 
 
+def read_lease_owner(path: str | Path) -> dict[str, object] | None:
+    """Read diagnostic lease metadata; never treat it as authorization."""
+    target = Path(path).resolve()
+    try:
+        raw = target.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"metadata_status": "INVALID_JSON", "raw_length": len(raw)}
+    return value if isinstance(value, dict) else {"metadata_status": "NOT_OBJECT"}
+
+
+def assert_lease_available(path: str | Path) -> None:
+    """Prove the kernel flock is free without modifying diagnostic metadata."""
+    target = Path(path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LeaseAlreadyOwned(
+                f"kernel lease remains held for {target}"
+            ) from exc
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
 def _process_start_identity(pid: int) -> str:
     """Return a PID-reuse-resistant process identity on macOS and Linux."""
     command = ["/bin/ps", "-o", "lstart=", "-p", str(pid)]
@@ -173,6 +207,7 @@ class SingleWriterSupervisor:
         prelaunch: Callable[[], None] | None = None,
         stdout_path: str | Path | None = None,
         stderr_path: str | Path | None = None,
+        worker_lease_path: str | Path | None = None,
     ) -> None:
         self.command = tuple(command)
         self.cwd = Path(cwd).resolve()
@@ -183,6 +218,9 @@ class SingleWriterSupervisor:
         self.prelaunch = prelaunch
         self.stdout_path = Path(stdout_path).resolve() if stdout_path else None
         self.stderr_path = Path(stderr_path).resolve() if stderr_path else None
+        self.worker_lease_path = (
+            Path(worker_lease_path).resolve() if worker_lease_path else None
+        )
         self.child: subprocess.Popen[bytes] | None = None
         self.stop_requested = False
 
@@ -198,6 +236,44 @@ class SingleWriterSupervisor:
 
     def request_stop(self, *_: object) -> None:
         self.stop_requested = True
+
+    def reconcile_orphaned_worker(self) -> None:
+        """Terminate only a PID/start/PGID-verified prior worker, then prove flock free."""
+        if self.worker_lease_path is None:
+            return
+        owner = read_lease_owner(self.worker_lease_path)
+        if owner is None:
+            assert_lease_available(self.worker_lease_path)
+            self._emit("WORKER_LEASE_CONFIRMED_FREE", prior_owner=None)
+            return
+        pid = owner.get("pid")
+        group = owner.get("process_group")
+        started = owner.get("process_started_at")
+        verified = False
+        if isinstance(pid, int) and isinstance(group, int) and isinstance(started, str):
+            try:
+                verified = (
+                    _process_start_identity(pid) == started
+                    and os.getpgid(pid) == group
+                    and pid in process_group_members(group)
+                )
+            except (OSError, subprocess.CalledProcessError):
+                verified = False
+        if verified:
+            evidence = terminate_process_group(group)
+            self._emit(
+                "ORPHANED_WORKER_GROUP_TERMINATED",
+                prior_owner=owner,
+                **evidence,
+            )
+        else:
+            self._emit(
+                "STALE_OR_UNVERIFIED_WORKER_METADATA",
+                prior_owner=owner,
+                destructive_action_taken=False,
+            )
+        assert_lease_available(self.worker_lease_path)
+        self._emit("WORKER_LEASE_CONFIRMED_FREE", prior_owner=owner)
 
     def launch(self) -> subprocess.Popen[bytes]:
         self.supervisor_lease.assert_owned()
@@ -254,6 +330,7 @@ class SingleWriterSupervisor:
             self._emit(
                 "SUPERVISOR_STARTED", lease_owner=self.supervisor_lease.owner or {}
             )
+            self.reconcile_orphaned_worker()
             while not self.stop_requested:
                 child = self.launch()
                 while not self.stop_requested and child.poll() is None:

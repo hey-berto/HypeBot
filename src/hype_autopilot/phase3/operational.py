@@ -164,7 +164,9 @@ def collect_operational_telemetry(
         if _table_exists(db, "phase2_evidence_windows"):
             row = db.execute(
                 "SELECT first_eligible_boundary FROM phase2_evidence_windows "
-                "ORDER BY first_eligible_boundary DESC LIMIT 1"
+                "WHERE phase2_epoch_id=? "
+                "ORDER BY first_eligible_boundary DESC LIMIT 1",
+                (manifest["phase2_epoch_id"],),
             ).fetchone()
             if row is not None:
                 evidence_start = datetime.fromisoformat(

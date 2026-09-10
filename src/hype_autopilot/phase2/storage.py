@@ -113,14 +113,19 @@ CREATE TRIGGER IF NOT EXISTS immutable_phase2_evidence_windows_delete BEFORE DEL
 BEGIN SELECT RAISE(ABORT, 'phase2 evidence windows are immutable'); END;
 CREATE VIEW IF NOT EXISTS phase2_evidence_eligible_trades AS
 SELECT t.* FROM paper_trades t
+JOIN decision_snapshots s ON s.snapshot_hash=t.snapshot_hash
 WHERE NOT EXISTS (
   SELECT 1 FROM phase2_outcome_exclusions x
   WHERE x.paper_trade_id=t.paper_trade_id
 )
 AND (
-  NOT EXISTS (SELECT 1 FROM phase2_evidence_windows)
+  NOT EXISTS (
+    SELECT 1 FROM phase2_evidence_windows w
+    WHERE w.phase2_epoch_id=s.epoch_id
+  )
   OR t.signal_time >= (
-    SELECT MAX(first_eligible_boundary) FROM phase2_evidence_windows
+    SELECT MAX(w.first_eligible_boundary) FROM phase2_evidence_windows w
+    WHERE w.phase2_epoch_id=s.epoch_id
   )
 );
 CREATE VIEW IF NOT EXISTS phase2_evidence_eligible_pair_outcomes AS
@@ -132,9 +137,13 @@ WHERE NOT EXISTS (
   WHERE t.snapshot_hash=p.input_snapshot_hash
 )
 AND (
-  NOT EXISTS (SELECT 1 FROM phase2_evidence_windows)
+  NOT EXISTS (
+    SELECT 1 FROM phase2_evidence_windows w
+    WHERE w.phase2_epoch_id=s.epoch_id
+  )
   OR s.snapshot_timestamp >= (
-    SELECT MAX(first_eligible_boundary) FROM phase2_evidence_windows
+    SELECT MAX(w.first_eligible_boundary) FROM phase2_evidence_windows w
+    WHERE w.phase2_epoch_id=s.epoch_id
   )
 );
 """

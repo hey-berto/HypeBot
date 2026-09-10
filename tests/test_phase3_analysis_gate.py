@@ -140,6 +140,7 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     repository.initialize()
     activation = datetime(2026, 9, 4, 3, 45, tzinfo=UTC)
     manifest = {
+        "phase2_epoch_id": "phase2_epoch_002",
         "frozen_contract": {
             "model": "gpt-5.6-terra",
             "model_version": "gpt-5.6-terra",
@@ -250,14 +251,29 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
 
     reset = activation + timedelta(minutes=30)
     db = sqlite3.connect(database)
+    db.execute("PRAGMA foreign_keys=ON")
     db.execute(
-        "CREATE TABLE phase2_outcome_exclusions(paper_trade_id TEXT PRIMARY KEY)"
+        "INSERT INTO phase2_outcome_exclusions VALUES (?,?,?,?,?,?,?,?)",
+        ("x0", "t0", "phase2_epoch_002", reset.isoformat(), "TEST", "fixture", "{}", "xi"),
     )
-    db.execute("INSERT INTO phase2_outcome_exclusions VALUES ('t0')")
     db.execute(
-        "CREATE TABLE phase2_evidence_windows(first_eligible_boundary TEXT NOT NULL)"
+        "INSERT INTO phase2_operational_deployments VALUES (?,?,?,?,?,?,?,?,?)",
+        ("dep2", "phase2_epoch_002", "mh", "g", "d", "OPERATIONAL_ONLY", reset.isoformat(), "{}", "di2"),
     )
-    db.execute("INSERT INTO phase2_evidence_windows VALUES (?)", (reset.isoformat(),))
+    db.execute(
+        "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?)",
+        ("w2", "phase2_epoch_002", reset.isoformat(), "dep2", "TEST", "{}", "wi2"),
+    )
+    # A globally newer window from another epoch must never move epoch_002's clock.
+    other = reset + timedelta(days=3)
+    db.execute(
+        "INSERT INTO phase2_operational_deployments VALUES (?,?,?,?,?,?,?,?,?)",
+        ("dep3", "phase2_epoch_003", "mh", "g", "d", "OPERATIONAL_ONLY", other.isoformat(), "{}", "di3"),
+    )
+    db.execute(
+        "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?)",
+        ("w3", "phase2_epoch_003", other.isoformat(), "dep3", "TEST", "{}", "wi3"),
+    )
     db.commit()
     db.close()
     reset_report = collect_operational_telemetry(database)

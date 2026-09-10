@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 PROBE = Path(__file__).with_name("phase2_single_writer_probe.py")
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -135,3 +137,77 @@ def test_single_writer_lock_verified_group_death_and_supervisor_restart(tmp_path
     with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_new_supervisor_discovers_and_terminates_verified_hard_crash_orphan(tmp_path):
+    root = tmp_path / "phase2-cross-instance-orphan"
+    root.mkdir()
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": f"{ROOT / 'src'}:{ROOT}",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    supervisors: list[subprocess.Popen[bytes]] = []
+
+    def start_supervisor() -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(
+            [sys.executable, str(PROBE), "supervisor", str(root)],
+            cwd=root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        supervisors.append(process)
+        return process
+
+    try:
+        first = start_supervisor()
+        initial = wait_for(lambda: worker_starts(root))[-1]
+        orphan_pid = int(initial["details"]["worker_pid"])
+        wait_for(lambda: len(worker_rows(root)) > 1)
+        cut = len(worker_rows(root))
+
+        first.kill()
+        assert first.wait(timeout=10) == -signal.SIGKILL
+        wait_for(lambda: len(worker_rows(root)) > cut)
+        os.kill(orphan_pid, 0)
+
+        second = start_supervisor()
+        replacement = wait_for(
+            lambda: worker_starts(root) if len(worker_starts(root)) >= 2 else None
+        )[-1]
+        replacement_pid = int(replacement["details"]["worker_pid"])
+        assert replacement_pid != orphan_pid
+        wait_for(lambda: any(row[1] == replacement_pid for row in worker_rows(root)))
+        with pytest.raises(ProcessLookupError):
+            os.kill(orphan_pid, 0)
+        orphan_events = [
+            row
+            for row in events(root / "supervisor-events.jsonl")
+            if row["event"] == "ORPHANED_WORKER_GROUP_TERMINATED"
+        ]
+        assert orphan_events
+        assert orphan_events[-1]["details"]["prior_owner"]["pid"] == orphan_pid
+        assert orphan_events[-1]["details"]["final_members"] == []
+        assert second.poll() is None
+    finally:
+        for supervisor in supervisors:
+            if supervisor.poll() is None:
+                supervisor.terminate()
+            try:
+                supervisor.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(supervisor.pid, signal.SIGKILL)
+                supervisor.wait(timeout=10)
+
+    database = root / "NON_SCORED_SUPERVISOR.sqlite3"
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+        worker_pids = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT pid FROM worker_events")
+        }
+        assert worker_pids == {orphan_pid, replacement_pid}
