@@ -148,10 +148,11 @@ sudo install -d -o root -g root -m 0755 /opt/hypebot /etc/hypebot /etc/hypebot/a
 sudo install -d -o hypebot -g hypebot -m 0750 /var/lib/hypebot/phase1 /var/lib/hypebot/phase2 /var/log/hypebot
 sudo git clone https://github.com/hey-berto/HypeBot.git /opt/hypebot/repo
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase1 e4305c35fd4e73a23ffab83bdf1fa1502e24709c
-sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase2 0322e53ba55df1c9ad44286616cd71bd2e0700c6
+sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase2 0a9eb262bb77980106cbfad03336dd4209a34308
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase3 __PHASE3_TOOLING_COMMIT__
+sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/operations __REVIEWED_FINAL_OPERATIONAL_GATE_COMMIT__
 test "$(git -C /opt/hypebot/phase1 rev-parse HEAD)" = e4305c35fd4e73a23ffab83bdf1fa1502e24709c
-test "$(git -C /opt/hypebot/phase2 rev-parse HEAD)" = 0322e53ba55df1c9ad44286616cd71bd2e0700c6
+test "$(git -C /opt/hypebot/phase2 rev-parse HEAD)" = 0a9eb262bb77980106cbfad03336dd4209a34308
 ```
 
 Create separate virtual environments with Python 3.12 and install each exact

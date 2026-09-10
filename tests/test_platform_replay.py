@@ -38,6 +38,9 @@ def test_systemd_templates_are_inactive_and_phase2_fails_closed():
     )
     assert not (ROOT / "deploy/systemd/hypebot-phase1.service").exists()
     assert not (ROOT / "deploy/systemd/hypebot-phase2.service").exists()
+    runbook = (ROOT / "docs/ubuntu-migration-runbook.md").read_text()
+    assert REVIEWED_COMMIT in runbook
+    assert "worktree add --detach /opt/hypebot/phase2 0322e53" not in runbook
 
 
 def test_alert_template_uses_repository_adapter_and_fatal_debounce():
