@@ -17,8 +17,16 @@ class ProviderError(RuntimeError):
     pass
 
 
-class ProviderTimeout(ProviderError):
+class ProviderTransportError(ProviderError):
+    """Retryable failure before a provider response can be interpreted."""
+
+
+class ProviderTimeout(ProviderTransportError):
     pass
+
+
+class ProviderContractError(ProviderError):
+    """Non-retryable provider response-envelope or request-contract failure."""
 
 
 class LLMProvider(Protocol):
@@ -104,12 +112,16 @@ class OpenAIResponsesProvider:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
             raise ProviderTimeout("OpenAI request timed out") from exc
+        except urllib.error.HTTPError as exc:
+            if exc.code in {408, 429} or 500 <= exc.code < 600:
+                raise ProviderTransportError("OpenAI request was transiently rejected") from exc
+            raise ProviderContractError("OpenAI request was rejected") from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 raise ProviderTimeout("OpenAI request timed out") from exc
-            raise ProviderError("OpenAI request failed") from exc
+            raise ProviderTransportError("OpenAI request transport failed") from exc
         except (ValueError, KeyError, TypeError) as exc:
-            raise ProviderError(
+            raise ProviderContractError(
                 "OpenAI returned an unreadable response envelope"
             ) from exc
         ended = datetime.now(UTC)
@@ -148,8 +160,10 @@ class OpenAIResponsesProvider:
                 cost_usd=cost,
                 tool_calls_count=tool_calls,
             )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ProviderError("OpenAI response was missing required fields") from exc
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise ProviderContractError(
+                "OpenAI response was missing required fields"
+            ) from exc
 
 
 def openai_provider_from_config(

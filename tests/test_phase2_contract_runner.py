@@ -25,8 +25,10 @@ from hype_autopilot.phase2.models import (
     RunnerStatus,
 )
 from hype_autopilot.phase2.provider import (
+    ProviderContractError,
     ProviderError,
     ProviderTimeout,
+    ProviderTransportError,
     output_json_schema,
 )
 from hype_autopilot.phase2.runner import FailClosedLLMRunner, adapt_llm_decision
@@ -371,9 +373,8 @@ def test_v2_runner_rejects_wrong_version_in_schema_and_accepts_literal():
         snapshot, [invalid, invalid], config_path=CONFIG_V2_PATH
     )
     rejected = runner.evaluate(snapshot)
-    assert rejected.reason_code == FailClosedReason.RETRY_EXHAUSTED
-    assert rejected.metadata["terminal_cause"] == FailClosedReason.INVALID_SCHEMA.value
-    assert provider.calls == 2
+    assert rejected.reason_code == FailClosedReason.INVALID_SCHEMA
+    assert provider.calls == 1
 
     snapshot = snapshot.model_copy(update={"snapshot_id": "phase2-v2-valid"})
     snapshot = freeze_snapshot(snapshot.model_copy(update={"snapshot_hash": None}))
@@ -408,38 +409,37 @@ def test_integrity_and_geometry_violations_fail_closed_without_retry(mutator, re
     assert provider.calls == 1
 
 
-def test_malformed_output_retries_once_then_succeeds():
+def test_malformed_output_fails_immediately_without_retry():
     snapshot = phase2_snapshot()
     runner, repository, provider = make_runner(
         snapshot, ["not-json", valid_output(snapshot.snapshot_hash)]
     )
     record = runner.evaluate(snapshot)
-    assert record.runner_status == RunnerStatus.VALID
-    assert record.retry_count == 1 and provider.calls == 2
+    assert record.reason_code == FailClosedReason.MALFORMED_JSON
+    assert record.retry_count == 0 and provider.calls == 1
     assert (
         repository.db.execute(
             "SELECT COUNT(*) FROM llm_invocation_attempts"
         ).fetchone()[0]
-        == 2
+        == 1
     )
 
 
-def test_malformed_or_invalid_schema_retry_exhaustion_fails_closed():
+def test_malformed_or_invalid_schema_fails_closed_without_retry():
     for results, terminal_cause in (
-        (["not-json", "still-not-json"], FailClosedReason.MALFORMED_JSON),
-        (["{}", "{}"], FailClosedReason.INVALID_SCHEMA),
+        (["not-json", "unused"], FailClosedReason.MALFORMED_JSON),
+        (["{}", "unused"], FailClosedReason.INVALID_SCHEMA),
     ):
         snapshot = phase2_snapshot()
         runner, repository, provider = make_runner(snapshot, results)
         record = runner.evaluate(snapshot)
-        assert record.reason_code == FailClosedReason.RETRY_EXHAUSTED
-        assert record.metadata["terminal_cause"] == terminal_cause.value
-        assert provider.calls == 2
+        assert record.reason_code == terminal_cause
+        assert provider.calls == 1
         assert (
             repository.db.execute(
                 "SELECT COUNT(*) FROM llm_invocation_attempts"
             ).fetchone()[0]
-            == 2
+            == 1
         )
 
 
@@ -460,8 +460,8 @@ def test_tool_call_violation_is_immediate_fail_closed():
 @pytest.mark.parametrize(
     ("result", "reason"),
     [
-        (ProviderTimeout("timeout"), FailClosedReason.TIMEOUT),
         (ProviderError("api"), FailClosedReason.API_MODEL_ERROR),
+        (ProviderContractError("contract"), FailClosedReason.API_MODEL_ERROR),
     ],
 )
 def test_provider_failures_are_recorded_and_fail_closed(result, reason):
@@ -475,6 +475,42 @@ def test_provider_failures_are_recorded_and_fail_closed(result, reason):
         ).fetchone()[0]
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    ("failure", "terminal_cause"),
+    [
+        (ProviderTimeout("timeout"), FailClosedReason.TIMEOUT),
+        (ProviderTransportError("network"), FailClosedReason.API_MODEL_ERROR),
+    ],
+)
+def test_transport_failures_retry_once_then_succeed(failure, terminal_cause):
+    snapshot = phase2_snapshot()
+    runner, repository, provider = make_runner(
+        snapshot, [failure, valid_output(snapshot.snapshot_hash)]
+    )
+    record = runner.evaluate(snapshot)
+    assert record.runner_status == RunnerStatus.VALID
+    assert record.retry_count == 1 and provider.calls == 2
+    attempts = repository.db.execute(
+        "SELECT provider_status,error_code FROM llm_invocation_attempts ORDER BY attempt"
+    ).fetchall()
+    assert attempts[0]["error_code"] == terminal_cause.value
+    assert attempts[1]["provider_status"] == "VALID"
+
+
+def test_transport_retry_exhaustion_is_distinct():
+    snapshot = phase2_snapshot()
+    runner, repository, provider = make_runner(
+        snapshot, [ProviderTimeout("one"), ProviderTimeout("two")]
+    )
+    record = runner.evaluate(snapshot)
+    assert record.reason_code == FailClosedReason.RETRY_EXHAUSTED
+    assert record.metadata["terminal_cause"] == FailClosedReason.TIMEOUT.value
+    assert record.retry_count == 1 and provider.calls == 2
+    assert repository.db.execute(
+        "SELECT COUNT(*) FROM llm_invocation_attempts"
+    ).fetchone()[0] == 2
 
 
 def test_stale_or_rejected_snapshot_never_calls_provider():

@@ -65,17 +65,20 @@ def test_frozen_pending_no_expiry_and_entry_anchored_ttl(acceptance):
     assert "INTRABAR_ORDER_AMBIGUOUS" in adverse["flags_json"]
 
 
-def test_frozen_retry_policy_and_exact_raw_response_lineage(acceptance):
-    retry = acceptance["cases"]["malformed_retry"]["trace"][0]["checkpoint"]
+def test_transport_only_retry_policy_and_exact_raw_response_lineage(acceptance):
+    retry = acceptance["cases"]["transport_retry"]["trace"][0]["checkpoint"]
     assert retry["counts"]["llm_invocation_attempts"] == 2
     assert [row["provider_status"] for row in retry["raw_audit"]] == [
-        "MALFORMED",
+        "TIMEOUT",
         "VALID",
     ]
     assert retry["parsed_raw_lineage"][0]["exact_parsed_raw_lineage"]
-    exhausted = acceptance["cases"]["malformed_exhaustion"]["trace"][0]["checkpoint"]
+    exhausted = acceptance["cases"]["transport_exhaustion"]["trace"][0]["checkpoint"]
     assert exhausted["counts"]["llm_invocation_attempts"] == 2
     assert exhausted["counts"]["llm_decisions"] == 1
+    malformed = acceptance["cases"]["malformed_fail_closed"]["trace"][0]["checkpoint"]
+    assert malformed["counts"]["llm_invocation_attempts"] == 1
+    assert malformed["counts"]["llm_decisions"] == 1
     for case in acceptance["cases"].values():
         final = case["final"]
         assert final["attempt_policy_violation_groups"] == 0
@@ -83,7 +86,10 @@ def test_frozen_retry_policy_and_exact_raw_response_lineage(acceptance):
         assert final["llm_decision_integrity_hashes_match"]
         assert final["snapshot_hashes_match"]
         for attempt in final["raw_audit"]:
-            assert attempt["raw_retained"] and attempt["raw_sha256_matches"]
+            if attempt["provider_status"] in {"TIMEOUT", "TRANSPORT_ERROR"}:
+                assert not attempt["raw_retained"]
+            else:
+                assert attempt["raw_retained"] and attempt["raw_sha256_matches"]
             assert attempt["attempt_integrity_hash_matches"]
             assert attempt["tool_calls"] == 0
             if attempt["provider_status"] == "VALID":

@@ -33,7 +33,7 @@ from hype_autopilot.phase2.isolation import Phase2SQLiteConnection
 from hype_autopilot.phase2.manifest import Phase2Manifest, build_activation_manifest
 from hype_autopilot.phase2.models import LLMStructuredOutputV2, ProviderResponse
 from hype_autopilot.phase2.pipeline import Phase2Pipeline
-from hype_autopilot.phase2.provider import output_json_schema
+from hype_autopilot.phase2.provider import ProviderTimeout, output_json_schema
 from hype_autopilot.phase2.runner import FailClosedLLMRunner
 from hype_autopilot.phase2.scheduler import planned_phase2_boundary, run_phase2_boundary
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
@@ -321,6 +321,10 @@ class FixtureProvider:
         assert timeout_seconds == self.config.request_timeout_seconds
         snapshot = json.loads(snapshot_json)
         at = datetime.fromisoformat(snapshot["snapshot_timestamp"])
+        if self.mode == "transport_then_valid" and self.calls == 1:
+            raise ProviderTimeout("NON_SCORED injected provider timeout")
+        if self.mode == "transport_exhaustion":
+            raise ProviderTimeout("NON_SCORED injected provider timeout")
         trade = at == self.first_boundary
         # FIRST's fixture reference is about 121. Geometry remains valid for
         # NOW entry; simulator's first eligible raw 1m fallback close is 100.
@@ -349,11 +353,7 @@ class FixtureProvider:
         # Target is above the frozen reference and reached at the next fixture
         # management step; no strategy/economic parameter is modified.
         raw = json.dumps(value, sort_keys=True)
-        if (
-            self.mode == "malformed_then_valid"
-            and self.calls == 1
-            or self.mode == "malformed_exhaustion"
-        ):
+        if self.mode == "malformed":
             raw = "{NON_SCORED deliberately malformed JSON"
         return ProviderResponse(
             raw_output=raw,
@@ -774,8 +774,9 @@ def run_suite(destination: Path) -> dict[str, Any]:
         ("pending_without_eligible_bar", "pending_without_bar", "valid", "none"),
         ("ttl_exit", "ttl", "valid", "none"),
         ("adverse_first", "adverse_first", "valid", "none"),
-        ("malformed_retry", "normal", "malformed_then_valid", "none"),
-        ("malformed_exhaustion", "normal", "malformed_exhaustion", "none"),
+        ("transport_retry", "normal", "transport_then_valid", "none"),
+        ("transport_exhaustion", "normal", "transport_exhaustion", "none"),
+        ("malformed_fail_closed", "normal", "malformed", "none"),
         ("interrupted_before_collection", "normal", "valid", "before_collection"),
         ("interrupted_after_trade", "normal", "valid", "after_trade_before_order"),
         (

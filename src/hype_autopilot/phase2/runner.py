@@ -22,7 +22,12 @@ from hype_autopilot.phase2.models import (
     RunnerStatus,
     structured_output_model,
 )
-from hype_autopilot.phase2.provider import LLMProvider, ProviderError, ProviderTimeout
+from hype_autopilot.phase2.provider import (
+    LLMProvider,
+    ProviderError,
+    ProviderTimeout,
+    ProviderTransportError,
+)
 from hype_autopilot.phase2.resources import Phase2ResourceGuard, ResourceBudgetExceeded
 from hype_autopilot.phase2.storage import Phase2Repository
 from hype_autopilot.snapshots.canonicalize import freeze_snapshot
@@ -72,6 +77,8 @@ def validate_geometry(output: LLMStructuredOutput, snapshot: DecisionSnapshot) -
 
 
 class FailClosedLLMRunner:
+    TRANSPORT_MAX_RETRIES = 1
+
     def __init__(
         self,
         *,
@@ -127,10 +134,10 @@ class FailClosedLLMRunner:
             )
 
         snapshot_json = canonical_json(frozen)
-        max_attempts = 1 + self.config.malformed_output_max_retries
+        max_attempts = 1 + self.TRANSPORT_MAX_RETRIES
         if prior_attempts:
             last = prior_attempts[-1]
-            if last.provider_status not in {"MALFORMED", "INVALID_SCHEMA"}:
+            if last.provider_status not in {"TIMEOUT", "TRANSPORT_ERROR"}:
                 try:
                     reason = FailClosedReason(last.error_code or "API_MODEL_ERROR")
                 except ValueError:
@@ -185,23 +192,32 @@ class FailClosedLLMRunner:
                     age=age,
                     retry_count=attempt_number - 1,
                 )
-            except ProviderTimeout:
+            except ProviderTransportError as exc:
                 failed_at = self.clock().astimezone(UTC)
+                timed_out = isinstance(exc, ProviderTimeout)
+                reason = (
+                    FailClosedReason.TIMEOUT
+                    if timed_out
+                    else FailClosedReason.API_MODEL_ERROR
+                )
                 self._save_attempt(
                     frozen,
                     attempt_number,
                     failed_at,
                     failed_at,
-                    "TIMEOUT",
-                    FailClosedReason.TIMEOUT.value,
+                    "TIMEOUT" if timed_out else "TRANSPORT_ERROR",
+                    reason.value,
                     0,
                     None,
                 )
+                if attempt_number < max_attempts:
+                    continue
                 return self._persist_fail_closed(
                     frozen,
-                    FailClosedReason.TIMEOUT,
+                    FailClosedReason.RETRY_EXHAUSTED,
                     age=age,
                     retry_count=attempt_number - 1,
+                    metadata={"terminal_cause": reason.value},
                 )
             except ProviderError:
                 failed_at = self.clock().astimezone(UTC)
@@ -343,15 +359,12 @@ class FailClosedLLMRunner:
                     raw_capture_status,
                     provider_response=response,
                 )
-                if attempt_number < max_attempts:
-                    continue
                 return self._persist_fail_closed(
                     frozen,
-                    FailClosedReason.RETRY_EXHAUSTED,
+                    FailClosedReason.MALFORMED_JSON,
                     age=age,
                     response=response,
                     retry_count=attempt_number - 1,
-                    metadata={"terminal_cause": FailClosedReason.MALFORMED_JSON.value},
                 )
             try:
                 output = structured_output_model(
@@ -371,15 +384,12 @@ class FailClosedLLMRunner:
                     raw_capture_status,
                     provider_response=response,
                 )
-                if attempt_number < max_attempts:
-                    continue
                 return self._persist_fail_closed(
                     frozen,
-                    FailClosedReason.RETRY_EXHAUSTED,
+                    FailClosedReason.INVALID_SCHEMA,
                     age=age,
                     response=response,
                     retry_count=attempt_number - 1,
-                    metadata={"terminal_cause": FailClosedReason.INVALID_SCHEMA.value},
                 )
             if output.output_schema_version != self.config.output_schema_version:
                 reason = FailClosedReason.UNSUPPORTED_SCHEMA_VERSION
