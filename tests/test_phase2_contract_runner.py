@@ -178,6 +178,20 @@ def test_build_config_is_non_scored_and_path_isolated(tmp_path: Path):
             "data/phase2/test.sqlite3-wal", tmp_path / "phase2-worktree"
         )
 
+    external_root = tmp_path / "var/lib/hypebot/phase2"
+    allowed = validate_phase2_database_path(
+        external_root / "NON_SCORED.sqlite3",
+        tmp_path / "phase2-worktree",
+        allowed_data_root=external_root,
+    )
+    assert allowed.parent == external_root
+    with pytest.raises(IsolationViolation):
+        validate_phase2_database_path(
+            tmp_path / "var/lib/hypebot/phase1/epoch_001.sqlite3",
+            tmp_path / "phase2-worktree",
+            allowed_data_root=external_root,
+        )
+
 
 def test_activation_manifest_requires_both_gates_and_exact_authorization():
     config, digest = load_phase2_config(CONFIG_PATH)

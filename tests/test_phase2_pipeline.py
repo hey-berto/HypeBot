@@ -154,3 +154,49 @@ def test_runtime_factory_wires_isolated_database_without_network_or_scoring(
         ]
         == 0
     )
+    runtime.close()
+
+
+def test_runtime_factory_supports_explicit_ubuntu_data_and_lock_roots(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "opt/hypebot/phase2"
+    data_root = tmp_path / "var/lib/hypebot/phase2"
+    lock = tmp_path / "run/lock/hypebot/phase2.writer.lock"
+    for relative in (
+        "config/base.yaml",
+        "config/epoch_001.yaml",
+        "config/phase2/phase2_epoch_001.yaml",
+        "prompts/phase2/llm_v1.txt",
+    ):
+        target = workspace / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copyfile(relative, target)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setattr(
+        "hype_autopilot.phase2.runtime.HyperliquidMarketDataClient",
+        lambda _base_url: object(),
+    )
+
+    runtime = build_phase2_runtime(
+        workspace_root=workspace,
+        experiment_id="synthetic-runtime-build",
+        git_commit_hash="a" * 40,
+        database_path=data_root / "NON_SCORED_phase2.sqlite3",
+        allowed_data_root=data_root,
+        writer_lock_path=lock,
+    )
+    try:
+        database = Path(
+            runtime.repository.db.execute("PRAGMA database_list").fetchone()["file"]
+        )
+        assert database.parent == data_root
+        assert runtime.writer_lease.path == lock
+        assert (
+            runtime.repository.db.execute(
+                "SELECT COUNT(*) FROM llm_decisions"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        runtime.close()

@@ -82,19 +82,37 @@ def build_phase2_runtime(
     base_path: str | Path = "config/base.yaml",
     frozen_epoch_path: str | Path = "config/epoch_001.yaml",
     git_commit_hash: str | None = None,
+    database_path: str | Path | None = None,
+    allowed_data_root: str | Path | None = None,
+    writer_lock_path: str | Path | None = None,
 ) -> Phase2Runtime:
     root = Path(workspace_root).resolve()
     git_commit_hash = _resolve_git_identity(root, git_commit_hash)
     config_file = resolve_inside_workspace(config_path, root)
     config, digest = load_phase2_config(config_file)
-    database_path = resolve_inside_workspace(config.database_path, root)
+    configured_database = database_path or config.database_path
+    if database_path is None and allowed_data_root is not None:
+        configured_database = Path(allowed_data_root) / Path(config.database_path).name
+    database_path = Path(configured_database)
+    if not database_path.is_absolute():
+        database_path = root / database_path
+    database_path = database_path.resolve()
+    lock_path = (
+        Path(writer_lock_path).resolve()
+        if writer_lock_path is not None
+        else database_path.with_suffix(database_path.suffix + ".writer.lock")
+    )
     writer_lease = ExclusiveProcessLease(
-        database_path.with_suffix(database_path.suffix + ".writer.lock"),
+        lock_path,
         role="phase2-writer",
         epoch_id=config.phase2_epoch_id,
     ).acquire()
     try:
-        db = connect_phase2(database_path, root)
+        db = connect_phase2(
+            database_path,
+            root,
+            allowed_data_root=allowed_data_root,
+        )
         repository = Phase2Repository(db)
         repository.initialize()
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=HYPE Autopilot Phase 2 sanitized operational health check
+After=hypebot-phase2.service
+OnFailure=hypebot-alert@%n.service
+
+[Service]
+Type=oneshot
+User=hypebot
+Group=hypebot
+WorkingDirectory=/opt/hypebot/phase2
+ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-tooling phase2-health --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3 --worker-lease /run/lock/hypebot/phase2.writer.lock --supervisor-lease /run/lock/hypebot/phase2.supervisor.lock --maximum-boundary-age-minutes 20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/hypebot/phase2
+ReadWritePaths=/run/lock/hypebot

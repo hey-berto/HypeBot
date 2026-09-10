@@ -1,8 +1,10 @@
 [Unit]
-Description=HYPE Autopilot Phase 2 scheduler (incomplete template; do not install)
+Description=HYPE Autopilot Phase 2 external single-writer supervisor (review template)
 After=network-online.target time-sync.target hypebot-phase1.service
 Wants=network-online.target time-sync.target
-ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002-cutover
+Requires=hypebot-phase1.service
+ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002.grant.json
+OnFailure=hypebot-alert@%n.service
 
 [Service]
 Type=simple
@@ -10,20 +12,28 @@ User=hypebot
 Group=hypebot
 WorkingDirectory=/opt/hypebot/phase2
 EnvironmentFile=/etc/hypebot/phase2.env
-ExecStartPre=/opt/hypebot/tooling-venv/bin/hype-autopilot-tooling runtime-identity --repo /opt/hypebot/phase2 --expected-commit 0322e53ba55df1c9ad44286616cd71bd2e0700c6 --config config/phase2/phase2_epoch_002.yaml --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3
-ExecStart=__RESOLVE_APPROVED_PHASE2_PRODUCTION_SUPERVISOR_COMMAND_BEFORE_INSTALL__
+UMask=0027
+ExecStartPre=/opt/hypebot/phase2/.venv/bin/hype-autopilot-tooling runtime-identity --repo /opt/hypebot/phase2 --expected-commit __PHASE2_INTEGRATION_REVIEW_COMMIT__ --config config/phase2/phase2_epoch_002.yaml --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3
+ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-phase2-supervisor --worker-executable /opt/hypebot/phase2/.venv/bin/hype-autopilot-phase2-worker --workspace /opt/hypebot/phase2 --config config/phase2/phase2_epoch_002.yaml --epoch-id phase2_epoch_002 --expected-commit __PHASE2_INTEGRATION_REVIEW_COMMIT__ --database /var/lib/hypebot/phase2/phase2_epoch_002.sqlite3 --data-root /var/lib/hypebot/phase2 --worker-lease /run/lock/hypebot/phase2.writer.lock --supervisor-lease /run/lock/hypebot/phase2.supervisor.lock --grant /etc/hypebot/authorized/phase2-epoch-002.grant.json --event-log /var/log/hypebot/phase2-supervisor.jsonl --stdout-log /var/log/hypebot/phase2.stdout.log --stderr-log /var/log/hypebot/phase2.stderr.log
 Restart=on-failure
 RestartSec=15s
 StartLimitIntervalSec=900
 StartLimitBurst=5
 TimeoutStopSec=45
+KillMode=control-group
 KillSignal=SIGINT
-StandardOutput=append:/var/log/hypebot/phase2.log
-StandardError=append:/var/log/hypebot/phase2.err.log
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/hypebot/phase2 /var/log/hypebot
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/hypebot/phase2 /var/log/hypebot /run/lock/hypebot
 
 [Install]
 WantedBy=multi-user.target

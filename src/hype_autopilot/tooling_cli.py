@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 
 from hype_autopilot.migration import inspect_runtime_identity, write_identity_json
+from hype_autopilot.phase2.operations import (
+    phase2_operational_health,
+    sqlite_consistent_backup,
+    verify_backup,
+)
 from hype_autopilot.platform_replay import platform_replay_json
 from hype_autopilot.review_bundle import load_review_bundle_request, write_review_bundle
 
@@ -31,6 +36,21 @@ def main(argv: list[str] | None = None) -> int:
         "--fixture", default="config/migration/platform_replay_fixture_v1.yaml"
     )
     replay.add_argument("--output")
+
+    health = sub.add_parser("phase2-health")
+    health.add_argument("--database", required=True)
+    health.add_argument("--worker-lease", required=True)
+    health.add_argument("--supervisor-lease", required=True)
+    health.add_argument("--maximum-boundary-age-minutes", type=float, default=20.0)
+
+    backup = sub.add_parser("sqlite-backup")
+    backup.add_argument("--source", required=True)
+    backup.add_argument("--destination", required=True)
+    backup.add_argument("--manifest")
+
+    verify = sub.add_parser("sqlite-verify-backup")
+    verify.add_argument("--backup", required=True)
+    verify.add_argument("--sha256", required=True)
     args = parser.parse_args(argv)
 
     if args.command == "review-bundle":
@@ -58,6 +78,28 @@ def main(argv: list[str] | None = None) -> int:
             print(output)
         else:
             print(result)
+    elif args.command == "phase2-health":
+        result = phase2_operational_health(
+            args.database,
+            worker_lease=args.worker_lease,
+            supervisor_lease=args.supervisor_lease,
+            maximum_boundary_age_minutes=args.maximum_boundary_age_minutes,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["healthy"] else 1
+    elif args.command == "sqlite-backup":
+        result = sqlite_consistent_backup(args.source, args.destination)
+        if args.manifest:
+            Path(args.manifest).write_text(
+                json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif args.command == "sqlite-verify-backup":
+        print(
+            json.dumps(
+                verify_backup(args.backup, args.sha256), indent=2, sort_keys=True
+            )
+        )
     return 0
 
 

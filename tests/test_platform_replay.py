@@ -26,8 +26,12 @@ def test_systemd_templates_are_inactive_and_phase2_fails_closed():
     phase2 = (ROOT / "deploy/systemd/hypebot-phase2.service.template").read_text()
     assert "ConditionPathExists=/etc/hypebot/authorized/" in phase1
     assert "ConditionPathExists=/etc/hypebot/authorized/" in phase2
+    assert "hype-autopilot-phase2-supervisor" in phase2
+    assert "hype-autopilot-phase2-worker" in phase2
+    assert "/usr/bin/caffeinate" not in phase2
+    assert "__PHASE2_INTEGRATION_REVIEW_COMMIT__" in phase2
     assert (
-        "__RESOLVE_APPROVED_PHASE2_PRODUCTION_SUPERVISOR_COMMAND_BEFORE_INSTALL__"
+        "ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-002.grant.json"
         in phase2
     )
     assert not (ROOT / "deploy/systemd/hypebot-phase1.service").exists()

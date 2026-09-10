@@ -1,0 +1,12 @@
+[Unit]
+Description=Run HYPE Autopilot Phase 2 operational health check every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=hypebot-phase2-health.service
+
+[Install]
+WantedBy=timers.target

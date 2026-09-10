@@ -8,3 +8,5 @@ EnvironmentFile=-/etc/hypebot/alert.env
 ExecStart=__INSTALL_LOCAL_ALERT_COMMAND_THAT_DOES_NOT_PRINT_ENVIRONMENT__ %i
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
