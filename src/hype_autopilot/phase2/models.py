@@ -144,10 +144,40 @@ class LLMStructuredOutput(BaseModel):
         return self
 
 
+class PriceGeometryV2(PriceGeometry):
+    kind: Literal["ABSOLUTE_PRICE"]
+    price: float = Field(gt=0, strict=True)
+
+
+class EntrySemanticsV2(EntrySemantics):
+    trigger_price: float | None = Field(gt=0, strict=True)
+
+
+class InvalidationV2(Invalidation):
+    category: str = Field(pattern=r"\S")
+    reference_price: float | None = Field(gt=0, strict=True)
+    tags: tuple[str, ...]
+
+
 class LLMStructuredOutputV2(LLMStructuredOutput):
-    """Versioned transport contract with an API-enforced schema identity."""
+    """The required, JSON-typed provider contract for prospective V2 outputs.
+
+    V1 retains its historical permissive defaults. Strict Structured Outputs
+    always emits every declared key, so V2 must not accept omitted keys or
+    coerce provider JSON strings into numeric values.
+    """
 
     output_schema_version: Literal["LLM_OUTPUT_V2"]
+    rationale_tags: tuple[str, ...]
+    bull_case: tuple[str, ...]
+    bear_case: tuple[str, ...]
+    data_conflicts: tuple[str, ...]
+    invocation_reason: str
+    entry: EntrySemanticsV2
+    stop: PriceGeometryV2 | None
+    target: PriceGeometryV2 | None
+    invalidation: InvalidationV2 | None
+    ttl_minutes: int | None = Field(ge=1, le=10_080, strict=True)
 
 
 def structured_output_model(version: str) -> type[LLMStructuredOutput]:
