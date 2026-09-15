@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import grp
 import hashlib
 import json
 import os
 import signal
-import sys
+import stat
 import threading
 import time
 from dataclasses import asdict
@@ -27,6 +28,8 @@ from hype_autopilot.phase2.supervision import (
 
 GRANT_VERSION = "PHASE2_DURABLE_ACTIVATION_GRANT_V1"
 RECEIPT_VERSION = "PHASE2_SINGLE_USE_AUTHORIZATION_RECEIPT_V1"
+AUTHORIZATION_GROUP = "hypebot-phase2-auth"
+GRANT_MODE = 0o640
 
 
 def _sha256_file(path: Path) -> str:
@@ -37,13 +40,31 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def consume_single_use_authorization(receipt: Path, grant: Path) -> dict[str, Any]:
+def _validate_grant_metadata(
+    metadata: os.stat_result, *, expected_group_gid: int
+) -> None:
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PermissionError("durable activation grant must be a regular file")
+    if metadata.st_uid != 0:
+        raise PermissionError("durable activation grant must be owned by root")
+    if metadata.st_gid != expected_group_gid:
+        raise PermissionError("durable activation grant group is invalid")
+    if stat.S_IMODE(metadata.st_mode) != GRANT_MODE:
+        raise PermissionError("durable activation grant must have mode 0640")
+
+
+def consume_single_use_authorization(
+    receipt: Path, grant: Path, *, grant_group: str
+) -> dict[str, Any]:
     """Consume one authorization receipt into a phrase-free durable grant.
 
     This helper is intentionally never called by service startup. Creating the
     grant is a separately authorized operational action; workers can only read
     and validate the resulting root-controlled file.
     """
+    if os.geteuid() != 0:
+        raise PermissionError("durable activation grant creation requires root")
+    group = grp.getgrnam(grant_group)
     receipt = receipt.resolve(strict=True)
     grant = grant.resolve()
     if grant.exists():
@@ -87,8 +108,12 @@ def consume_single_use_authorization(receipt: Path, grant: Path) -> dict[str, An
     try:
         os.write(
             descriptor,
-            (json.dumps(durable, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+            (
+                json.dumps(durable, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode(),
         )
+        os.fchown(descriptor, 0, group.gr_gid)
+        os.fchmod(descriptor, GRANT_MODE)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -97,10 +122,10 @@ def consume_single_use_authorization(receipt: Path, grant: Path) -> dict[str, An
     return durable
 
 
-def load_durable_grant(path: str | Path) -> dict[str, Any]:
+def load_durable_grant(path: str | Path, *, expected_group: str) -> dict[str, Any]:
     target = Path(path).resolve(strict=True)
-    if target.stat().st_mode & 0o077:
-        raise PermissionError("durable activation grant must not be group/world accessible")
+    group = grp.getgrnam(expected_group)
+    _validate_grant_metadata(target.stat(), expected_group_gid=group.gr_gid)
     payload = json.loads(target.read_text(encoding="utf-8"))
     expected = hashlib.sha256(ACTIVATION_PHRASE.encode("utf-8")).hexdigest()
     if payload.get("grant_version") != GRANT_VERSION:
@@ -182,7 +207,7 @@ def run_worker(args: argparse.Namespace) -> None:
     runtime: Phase2Runtime | None = None
     thread: threading.Thread | None = None
     try:
-        grant = load_durable_grant(args.grant)
+        grant = load_durable_grant(args.grant, expected_group=args.grant_group)
         if grant["phase2_epoch_id"] != args.epoch_id:
             raise PermissionError("worker epoch differs from durable activation grant")
         runtime = build_phase2_runtime(
@@ -259,6 +284,8 @@ def run_supervisor(args: argparse.Namespace) -> None:
         str(args.worker_lease),
         "--grant",
         str(args.grant),
+        "--grant-group",
+        args.grant_group,
     ]
     instance = SingleWriterSupervisor(
         command=worker,
@@ -287,6 +314,7 @@ def worker_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--worker-lease", type=Path, required=True)
     parser.add_argument("--grant", type=Path, required=True)
+    parser.add_argument("--grant-group", required=True)
     parser.add_argument("--readiness-timeout", type=float, default=120.0)
     return parser
 
@@ -303,6 +331,7 @@ def supervisor_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-lease", type=Path, required=True)
     parser.add_argument("--supervisor-lease", type=Path, required=True)
     parser.add_argument("--grant", type=Path, required=True)
+    parser.add_argument("--grant-group", required=True)
     parser.add_argument("--event-log", type=Path, required=True)
     parser.add_argument("--stdout-log", type=Path, required=True)
     parser.add_argument("--stderr-log", type=Path, required=True)
@@ -322,9 +351,14 @@ def authorization_main() -> None:
     parser = argparse.ArgumentParser(prog="hype-autopilot-phase2-authorize")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--grant", type=Path, required=True)
+    parser.add_argument("--grant-group", default=AUTHORIZATION_GROUP)
     args = parser.parse_args()
-    durable = consume_single_use_authorization(args.receipt, args.grant)
-    print(json.dumps({"grant_created": str(args.grant), "grant": durable}, sort_keys=True))
+    durable = consume_single_use_authorization(
+        args.receipt, args.grant, grant_group=args.grant_group
+    )
+    print(
+        json.dumps({"grant_created": str(args.grant), "grant": durable}, sort_keys=True)
+    )
 
 
 if __name__ == "__main__":
