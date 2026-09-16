@@ -39,12 +39,15 @@ sidecars, non-`.sqlite3` files, and any Phase 1 path. Kernel writer and
 supervisor leases live under `/run/lock/hypebot`, created by the committed
 tmpfiles rule. The worker has no Mac path and no `caffeinate` dependency.
 
-Activation is still a separate future action. A root-controlled, mode-0600,
-single-use receipt is converted once by `hype-autopilot-phase2-authorize` into
-a phrase-free durable grant; the original receipt is atomically renamed with a
-`.consumed` suffix. Service startup only reads a durable grant and verifies it
-against the immutable manifest already in the database. It cannot manufacture
-authorization. Do not create either file during non-scored acceptance.
+Activation is still a separate future action. A root-controlled single-use
+receipt is converted once by `hype-autopilot-phase2-authorize` into a
+root-owned, `hypebot-phase2-auth` group-owned, mode-0640 phrase-free durable
+grant; the original receipt is atomically renamed with a `.consumed` suffix.
+Only the `hypebot` service identity receives this supplementary group, and the
+loader rejects any other owner, group, file type, or mode. Service startup only
+reads a durable grant and verifies it against the immutable manifest already in
+the database. It cannot manufacture authorization. Do not create either file
+during non-scored acceptance.
 
 Operational monitoring uses `hype-autopilot-tooling phase2-health`. Its output
 is explicitly limited to process, boundary freshness, gaps, duplicates,
@@ -143,8 +146,11 @@ sudo apt-get update
 sudo apt-get install -y git python3.12 python3.12-venv sqlite3 curl ca-certificates
 timedatectl status
 systemctl status systemd-timesyncd
+sudo groupadd --system hypebot-phase2-auth
 sudo useradd --system --home /var/lib/hypebot --shell /usr/sbin/nologin hypebot
-sudo install -d -o root -g root -m 0755 /opt/hypebot /etc/hypebot /etc/hypebot/authorized
+sudo usermod -a -G hypebot-phase2-auth hypebot
+sudo install -d -o root -g root -m 0755 /opt/hypebot /etc/hypebot
+sudo install -d -o root -g hypebot-phase2-auth -m 0750 /etc/hypebot/authorized
 sudo install -d -o hypebot -g hypebot -m 0750 /var/lib/hypebot/phase1 /var/lib/hypebot/phase2 /var/log/hypebot
 sudo git clone https://github.com/hey-berto/HypeBot.git /opt/hypebot/repo
 sudo git -C /opt/hypebot/repo worktree add --detach /opt/hypebot/phase1 e4305c35fd4e73a23ffab83bdf1fa1502e24709c

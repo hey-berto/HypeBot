@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import grp
 import hashlib
 import json
+import os
 import shutil
 import socket
 import sqlite3
@@ -108,8 +110,17 @@ def fixture(tmp_path: Path):
         expected_reasoning=config.reasoning_effort,
         database=str(database),
         grant=str(grant),
+        expected_grant_group=grp.getgrgid(os.getgid()).gr_name,
     )
     return args, database, grant
+
+
+@pytest.fixture(autouse=True)
+def bypass_root_metadata_for_non_scored_fixture(monkeypatch):
+    monkeypatch.setattr(
+        "hype_autopilot.phase2.service._validate_grant_metadata",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def approved_network():
@@ -239,6 +250,9 @@ def test_unit_pins_epoch003():
     ).read_text()
     assert "phase2_epoch_002" not in service + health
     assert "phase2_epoch_003" in service + health
-    assert "63d2d4ecc1f135ae94e517164095b5b0a2c2ba5b" in service
+    assert "4f38eb3d8d05765ab17b42bf054f6106c4ef6c52" in service
     assert "phase2_epoch003_start_gate.py" in service
+    assert "SupplementaryGroups=hypebot-phase2-auth" in service
+    assert "--expected-grant-group hypebot-phase2-auth" in service
+    assert "--grant-group hypebot-phase2-auth" in service
     assert "ConditionPathExists=" not in service

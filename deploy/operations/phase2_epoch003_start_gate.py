@@ -160,7 +160,7 @@ def check_identity(
         raise RuntimeError("output/database schema identity mismatch")
 
     # Authoritative grant and DB are required before opening anything writable.
-    grant = load_durable_grant(args.grant)
+    grant = load_durable_grant(args.grant, expected_group=args.expected_grant_group)
     if (
         grant.get("phase2_epoch_id") != args.expected_epoch
         or grant.get("experiment_id") != args.expected_epoch
@@ -233,6 +233,7 @@ def parser() -> argparse.ArgumentParser:
         "expected-reasoning",
         "database",
         "grant",
+        "expected-grant-group",
     ):
         result.add_argument("--" + name, required=True)
     return result
