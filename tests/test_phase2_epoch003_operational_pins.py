@@ -270,6 +270,8 @@ def test_unit_pins_epoch003():
     assert "--grant-group hypebot-phase2-auth" in service
     assert "ConditionPathExists=" not in service
     assert "phase2_epoch003_runtime_worker.py" in service
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in service
+    assert service.count("AF_NETLINK") == 1
 
 
 def test_runtime_path_guard_allows_only_a_validated_provider_call(monkeypatch):

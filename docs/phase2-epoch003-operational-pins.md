@@ -37,6 +37,11 @@ The same gate requires Mullvad Connected via a Singapore relay, configured
 country sg, Lockdown mode on, no split-tunnel exclusions, no proxy environment,
 and all resolved OpenAI IPv4 routes for the service UID through wg0-mullvad.
 Routable IPv6 must also use that interface; unreachable IPv6 is acceptable.
+The service address-family sandbox retains `AF_UNIX`, `AF_INET`, and `AF_INET6`
+and additionally permits only `AF_NETLINK`, which is required by the gate's
+read-only `ip route get` probe. An otherwise identical hardened-context A/B
+test failed without `AF_NETLINK` and passed with it; no unrelated hardening or
+network fallback was removed or added.
 The periodic health service calls the network-only gate and alerts on failure.
 The approved VPN may rotate among Singapore relays/IPs. It must not switch
 countries or silently fall back to direct/proxy egress. Mullvad's host-level
