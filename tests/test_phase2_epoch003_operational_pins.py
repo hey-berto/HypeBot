@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import grp
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -30,6 +31,18 @@ from hype_autopilot.phase2.manifest import build_activation_manifest
 from hype_autopilot.phase2.provider import output_json_schema
 from hype_autopilot.phase2.service import GRANT_VERSION
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
+
+
+def runtime_guard_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/operations/phase2_epoch003_runtime_worker.py"
+    )
+    spec = importlib.util.spec_from_file_location("epoch003_runtime_worker_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def git(repo: Path, *args: str) -> str:
@@ -256,3 +269,80 @@ def test_unit_pins_epoch003():
     assert "--expected-grant-group hypebot-phase2-auth" in service
     assert "--grant-group hypebot-phase2-auth" in service
     assert "ConditionPathExists=" not in service
+    assert "phase2_epoch003_runtime_worker.py" in service
+
+
+def test_runtime_path_guard_allows_only_a_validated_provider_call(monkeypatch):
+    module = runtime_guard_module()
+    from hype_autopilot.phase2.provider import OpenAIResponsesProvider
+
+    calls: list[str] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def original(self, **kwargs):
+        calls.append("provider")
+        return "response"
+
+    monkeypatch.setattr(OpenAIResponsesProvider, "invoke", original)
+    module.install_runtime_guard(
+        network_check=approved_network,
+        telemetry=lambda status, *, details: events.append((status, details)),
+    )
+    provider = object.__new__(OpenAIResponsesProvider)
+    assert (
+        provider.invoke(prompt="p", snapshot_json="{}", timeout_seconds=1) == "response"
+    )
+    assert calls == ["provider"]
+    assert events == [("PASS", approved_network())]
+
+
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("invalid route"), OSError("probe failed")]
+)
+def test_runtime_path_guard_blocks_invalid_or_unknown_path_without_fallback(
+    monkeypatch, failure
+):
+    module = runtime_guard_module()
+    from hype_autopilot.phase2.provider import OpenAIResponsesProvider, ProviderError
+
+    calls: list[str] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def original(self, **kwargs):
+        calls.append("provider")
+        return "response"
+
+    monkeypatch.setattr(OpenAIResponsesProvider, "invoke", original)
+    module.install_runtime_guard(
+        network_check=lambda: (_ for _ in ()).throw(failure),
+        telemetry=lambda status, *, details: events.append((status, details)),
+    )
+    provider = object.__new__(OpenAIResponsesProvider)
+    with pytest.raises(ProviderError, match="runtime VPN path validation failed"):
+        provider.invoke(prompt="p", snapshot_json="{}", timeout_seconds=1)
+    assert calls == []
+    assert events == [
+        ("BLOCKED", {"error_class": type(failure).__name__, "error": str(failure)})
+    ]
+
+
+def test_runtime_path_guard_blocks_when_telemetry_cannot_persist(monkeypatch):
+    module = runtime_guard_module()
+    from hype_autopilot.phase2.provider import OpenAIResponsesProvider, ProviderError
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        OpenAIResponsesProvider,
+        "invoke",
+        lambda self, **kwargs: calls.append("provider"),
+    )
+    module.install_runtime_guard(
+        network_check=lambda: (_ for _ in ()).throw(RuntimeError("invalid route")),
+        telemetry=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("log unavailable")
+        ),
+    )
+    provider = object.__new__(OpenAIResponsesProvider)
+    with pytest.raises(ProviderError, match="telemetry failed"):
+        provider.invoke(prompt="p", snapshot_json="{}", timeout_seconds=1)
+    assert calls == []

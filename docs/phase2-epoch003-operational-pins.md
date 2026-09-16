@@ -27,7 +27,8 @@ performs a read-only, immutable SQLite check before the scored worker may
 open its database. It requires the exact Git SHA, detached clean checkout,
 config/prompt/schema hashes, model/reasoning, epoch ID, database integrity,
 zero FK violations, exact live DDL, one immutable activation manifest, and a
-mode-0600 durable grant matching that manifest. Missing DB/grant or any drift
+root-owned mode-0640 durable grant (readable only by the dedicated
+`hypebot-phase2-auth` group) matching that manifest. Missing DB/grant or any drift
 returns nonzero. The grant and manifest are not created by startup.
 ExecStart retains the independently reviewed supervisor/worker identity and
 single-writer lease checks.
@@ -40,6 +41,15 @@ The periodic health service calls the network-only gate and alerts on failure.
 The approved VPN may rotate among Singapore relays/IPs. It must not switch
 countries or silently fall back to direct/proxy egress. Mullvad's host-level
 Lockdown mode is an additional stop on internet access when disconnected.
+
+The root-owned operational worker wrapper separately calls the same path
+assertion immediately before *every* scored provider invocation. It appends a
+fsync'd PASS or BLOCKED event to
+`/var/log/hypebot/phase2-runtime-network.jsonl`; an invalid/unknown route or a
+telemetry write failure raises a provider error before `urllib` is entered.
+It never selects, changes, or reconnects a relay and it contains no direct or
+proxy fallback. The normal runner records that provider error as a fail-closed
+operational outcome, and the scheduler never backfills missed boundaries.
 
 The checked-in historical epoch002 material in docs/ubuntu-migration-runbook.md
 and its old backup example is archival; it must not be used for epoch003.
