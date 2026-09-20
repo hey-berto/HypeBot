@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from hype_autopilot.phase2.scheduler import (
+    PROSPECTIVE_START_EVENT,
     FatalPhase2OperationalError,
     account_for_process_downtime,
+    establish_prospective_start,
     planned_phase2_boundary,
+    prospective_start,
     run_phase2_boundary,
+    schedule_phase2_forever,
 )
 from hype_autopilot.phase2.storage import Phase2Repository
 
@@ -36,36 +42,92 @@ def _pipeline(repository: Phase2Repository) -> SimpleNamespace:
     )
 
 
-def test_downtime_accounting_is_audit_only_idempotent_and_quarter_hour_aligned():
+def test_fresh_start_ignores_old_manifest_and_never_accounts_prestart_boundaries():
     repository = _repository()
     pipeline = _pipeline(repository)
-    activation = datetime(2026, 9, 10, 0, 7, tzinfo=UTC)
+    activation = datetime(2026, 9, 10, 0, 55, tzinfo=UTC)
     manifest = SimpleNamespace(activation_timestamp=activation)
-    now = datetime(2026, 9, 10, 1, 7, tzinfo=UTC)
+    now = datetime(2026, 9, 10, 4, 38, tzinfo=UTC)
 
-    first = account_for_process_downtime(
-        pipeline, manifest=manifest, now=now
+    first = account_for_process_downtime(pipeline, manifest=manifest, now=now)
+    assert first.accounted == ()
+    assert prospective_start(pipeline) == now
+    assert planned_phase2_boundary(now) == datetime(2026, 9, 10, 4, 45, tzinfo=UTC)
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 0
     )
-    second = account_for_process_downtime(
-        pipeline, manifest=manifest, now=now
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0]
+        == 0
+    )
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM llm_invocation_attempts"
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM llm_decisions").fetchone()[0] == 0
+    )
+    events = repository.db.execute(
+        "SELECT event_type,source_identity FROM phase2_recovery_events"
+    ).fetchall()
+    assert [(row["event_type"], row["source_identity"]) for row in events] == [
+        (PROSPECTIVE_START_EVENT, EPOCH)
+    ]
+
+    # A direct call cannot invoke any provider for an earlier boundary.
+    calls: list[datetime] = []
+    pipeline.collect_reconstruct_and_score = lambda *, boundary, manifest: calls.append(
+        boundary
+    )
+    with pytest.raises(FatalPhase2OperationalError, match="predates"):
+        run_phase2_boundary(
+            pipeline,
+            manifest=manifest,
+            boundary=datetime(2026, 9, 10, 4, 30, tzinfo=UTC),
+        )
+    assert calls == []
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 0
     )
 
-    assert first.accounted == (
-        "2026-09-10T00:15:00+00:00",
-        "2026-09-10T00:30:00+00:00",
-        "2026-09-10T00:45:00+00:00",
-        "2026-09-10T01:00:00+00:00",
+
+def test_restarted_active_epoch_accounts_only_genuine_poststart_downtime():
+    repository = _repository()
+    pipeline = _pipeline(repository)
+    manifest = SimpleNamespace(
+        activation_timestamp=datetime(2026, 9, 10, 0, 55, tzinfo=UTC)
     )
+    start = datetime(2026, 9, 10, 4, 38, tzinfo=UTC)
+    assert (
+        account_for_process_downtime(pipeline, manifest=manifest, now=start).accounted
+        == ()
+    )
+    first_boundary = datetime(2026, 9, 10, 4, 45, tzinfo=UTC)
+    cycle_id = "non-scored-fixture-completed-boundary"
+    assert (
+        repository.core.begin_cycle(cycle_id, first_boundary, "SCORED_PROSPECTIVE")
+        is None
+    )
+    repository.core.finish_cycle(cycle_id, "COMPLETE", None, {"scoreable": False})
+    now = datetime(2026, 9, 10, 5, 2, tzinfo=UTC)
+    first = account_for_process_downtime(pipeline, manifest=manifest, now=now)
+    second = account_for_process_downtime(pipeline, manifest=manifest, now=now)
+
+    assert first.accounted == ("2026-09-10T05:00:00+00:00",)
     assert second.accounted == ()
     rows = repository.db.execute(
         "SELECT scheduled_at,status,snapshot_hash,details_json FROM research_cycles "
         "ORDER BY scheduled_at"
     ).fetchall()
-    assert len(rows) == 4
-    assert all(row["status"] == "REJECTED" for row in rows)
-    assert all(row["snapshot_hash"] is None for row in rows)
-    assert all(datetime.fromisoformat(row["scheduled_at"]).minute % 15 == 0 for row in rows)
-    for row in rows:
+    assert len(rows) == 2
+    assert [row["status"] for row in rows] == ["COMPLETE", "REJECTED"]
+    assert rows[1]["snapshot_hash"] is None
+    assert all(
+        datetime.fromisoformat(row["scheduled_at"]).minute % 15 == 0 for row in rows
+    )
+    for row in rows[1:]:
         details = json.loads(row["details_json"])
         assert details["reason"] == "PROCESS_DOWNTIME"
         assert details["audit_only"] is True
@@ -94,22 +156,107 @@ def test_downtime_accounting_is_audit_only_idempotent_and_quarter_hour_aligned()
         "paper_fills",
     ):
         assert repository.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-    assert repository.db.execute(
-        "SELECT COUNT(*) FROM phase2_recovery_events "
-        "WHERE event_type='PROCESS_DOWNTIME_ACCOUNTED'"
-    ).fetchone()[0] == 4
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM phase2_recovery_events "
+            "WHERE event_type='PROCESS_DOWNTIME_ACCOUNTED'"
+        ).fetchone()[0]
+        == 1
+    )
     # A backward clock adjustment cannot add or mutate historical rows.
     account_for_process_downtime(
         pipeline,
         manifest=manifest,
-        now=datetime(2026, 9, 10, 0, 50, tzinfo=UTC),
+        now=datetime(2026, 9, 10, 4, 50, tzinfo=UTC),
     )
-    assert repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 4
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 2
+    )
+    assert prospective_start(pipeline) == start
 
 
 def test_exact_boundary_planning_remains_strictly_prospective():
     exact = datetime(2026, 9, 10, 1, 0, tzinfo=UTC)
     assert planned_phase2_boundary(exact) == exact + timedelta(minutes=15)
+
+
+def test_non_scored_scheduler_start_at_0438_runs_only_0445(monkeypatch):
+    repository = _repository()
+    pipeline = _pipeline(repository)
+    manifest = SimpleNamespace(
+        activation_timestamp=datetime(2026, 9, 10, 0, 55, tzinfo=UTC)
+    )
+    now = datetime(2026, 9, 10, 4, 38, tzinfo=UTC)
+    stop = threading.Event()
+    attempted: list[datetime] = []
+
+    def non_scored_fixture(*, boundary, manifest):
+        attempted.append(boundary)
+        stop.set()
+        raise RuntimeError("non-scored fixture does not collect market data")
+
+    async def elapsed(awaitable, *, timeout):
+        del timeout
+        awaitable.close()
+        raise TimeoutError
+
+    pipeline.collect_reconstruct_and_score = non_scored_fixture
+    monkeypatch.setattr("hype_autopilot.phase2.scheduler.asyncio.wait_for", elapsed)
+    asyncio.run(
+        schedule_phase2_forever(
+            pipeline, manifest=manifest, stop=stop, clock=lambda: now
+        )
+    )
+    assert attempted == [datetime(2026, 9, 10, 4, 45, tzinfo=UTC)]
+    rows = repository.db.execute(
+        "SELECT scheduled_at,status FROM research_cycles ORDER BY scheduled_at"
+    ).fetchall()
+    assert [(row["scheduled_at"], row["status"]) for row in rows] == [
+        ("2026-09-10T04:45:00+00:00", "REJECTED")
+    ]
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM phase2_recovery_events "
+            "WHERE event_type='PROCESS_DOWNTIME_ACCOUNTED'"
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0]
+        == 0
+    )
+    assert (
+        repository.db.execute(
+            "SELECT COUNT(*) FROM llm_invocation_attempts"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_existing_rows_without_start_anchor_fail_closed_instead_of_reinterpreting_history():
+    repository = _repository()
+    pipeline = _pipeline(repository)
+    repository.core.begin_cycle(
+        "historical-fixture",
+        datetime(2026, 9, 10, 4, 30, tzinfo=UTC),
+        "SCORED_PROSPECTIVE",
+    )
+    manifest = SimpleNamespace(
+        activation_timestamp=datetime(2026, 9, 10, 0, 55, tzinfo=UTC)
+    )
+    with pytest.raises(FatalPhase2OperationalError, match="existing evidence"):
+        establish_prospective_start(
+            pipeline,
+            manifest=manifest,
+            now=datetime(2026, 9, 10, 4, 38, tzinfo=UTC),
+        )
+    assert prospective_start(pipeline) is None
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM phase2_recovery_events").fetchone()[
+            0
+        ]
+        == 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -120,7 +267,9 @@ def test_exact_boundary_planning_remains_strictly_prospective():
             lambda pipeline: setattr(
                 pipeline,
                 "assert_active_manifest",
-                lambda _manifest: (_ for _ in ()).throw(PermissionError("identity drift")),
+                lambda _manifest: (_ for _ in ()).throw(
+                    PermissionError("identity drift")
+                ),
             ),
         ),
         (
@@ -137,20 +286,28 @@ def test_exact_boundary_planning_remains_strictly_prospective():
         ),
     ),
 )
-def test_fatal_manifest_and_recovery_failures_are_structured_and_stop(
-    stage, configure
-):
+def test_fatal_manifest_and_recovery_failures_are_structured_and_stop(stage, configure):
     repository = _repository()
     pipeline = _pipeline(repository)
-    configure(pipeline)
     boundary = datetime(2026, 9, 10, 1, 15, tzinfo=UTC)
+    establish_prospective_start(
+        pipeline,
+        manifest=SimpleNamespace(
+            activation_timestamp=datetime(2026, 9, 10, 1, 0, tzinfo=UTC)
+        ),
+        now=datetime(2026, 9, 10, 1, 7, tzinfo=UTC),
+    )
+    configure(pipeline)
 
     with pytest.raises(FatalPhase2OperationalError, match="audit_persisted=True"):
         run_phase2_boundary(pipeline, manifest=object(), boundary=boundary)
 
-    assert repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 0
+    assert (
+        repository.db.execute("SELECT COUNT(*) FROM research_cycles").fetchone()[0] == 0
+    )
     row = repository.db.execute(
-        "SELECT event_type,source_identity,payload_json FROM phase2_recovery_events"
+        "SELECT event_type,source_identity,payload_json FROM phase2_recovery_events "
+        "WHERE event_type='FATAL_RECOVERY_FAILED'"
     ).fetchone()
     assert row["event_type"] == "FATAL_RECOVERY_FAILED"
     assert row["source_identity"] == f"{stage}:{boundary.isoformat()}"

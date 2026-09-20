@@ -35,7 +35,11 @@ from hype_autopilot.phase2.models import LLMStructuredOutputV2, ProviderResponse
 from hype_autopilot.phase2.pipeline import Phase2Pipeline
 from hype_autopilot.phase2.provider import ProviderTimeout, output_json_schema
 from hype_autopilot.phase2.runner import FailClosedLLMRunner
-from hype_autopilot.phase2.scheduler import planned_phase2_boundary, run_phase2_boundary
+from hype_autopilot.phase2.scheduler import (
+    establish_prospective_start,
+    planned_phase2_boundary,
+    run_phase2_boundary,
+)
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
 from hype_autopilot.simulation.engine import PaperSimulator
 from hype_autopilot.snapshots.builder import SnapshotBuilder
@@ -464,6 +468,11 @@ def run_worker(
         ),
         database_schema_hash=phase2_database_schema_hash(),
         recovery_fault_hook=recovery_fault,
+    )
+    establish_prospective_start(
+        pipeline,
+        manifest=manifest,
+        now=manifest.activation_timestamp,
     )
     result = run_phase2_boundary(pipeline, manifest=manifest, boundary=boundary)
     snapshot = inspect_case(case)

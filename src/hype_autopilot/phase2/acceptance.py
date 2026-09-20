@@ -26,6 +26,7 @@ from hype_autopilot.phase2.provider import (
 )
 from hype_autopilot.phase2.runner import FailClosedLLMRunner
 from hype_autopilot.phase2.scheduler import (
+    establish_prospective_start,
     planned_phase2_boundary,
     run_phase2_boundary,
 )
@@ -320,7 +321,7 @@ def run_scheduler_acceptance(
     manifest = build_activation_manifest(
         config=config,
         experiment_id=NON_SCORED_SCHEDULER_ACCEPTANCE,
-        activation_timestamp=first_boundary,
+        activation_timestamp=first_boundary - timedelta(seconds=1),
         authorization=ACTIVATION_PHRASE,
         git_commit_hash=commit,
         config_hash=config_hash,
@@ -356,6 +357,11 @@ def run_scheduler_acceptance(
         )
 
     first_pipeline = build_pipeline()
+    establish_prospective_start(
+        first_pipeline,
+        manifest=manifest,
+        now=first_boundary - timedelta(seconds=1),
+    )
     first_status = run_phase2_boundary(
         first_pipeline, manifest=manifest, boundary=first_boundary
     )
