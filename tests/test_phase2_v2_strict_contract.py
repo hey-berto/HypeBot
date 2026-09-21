@@ -13,7 +13,6 @@ from hype_autopilot.phase2.models import LLMStructuredOutput, LLMStructuredOutpu
 from hype_autopilot.phase2.provider import output_json_schema
 from hype_autopilot.phase2.runner import GeometryViolation, validate_geometry
 
-
 ROOT = Path(__file__).resolve().parents[1]
 HASH = "a" * 64
 
@@ -82,14 +81,23 @@ def test_every_transport_object_property_is_locally_required() -> None:
         assert set(nested["required"]) == set(nested["properties"])
         assert nested["additionalProperties"] is False
     assert set(LLMStructuredOutputV2.model_fields) == set(schema["properties"])
-    assert all(field.is_required() for field in LLMStructuredOutputV2.model_fields.values())
+    assert all(
+        field.is_required() for field in LLMStructuredOutputV2.model_fields.values()
+    )
 
 
 @pytest.mark.parametrize(
     "field",
     [
-        "rationale_tags", "bull_case", "bear_case", "data_conflicts",
-        "invocation_reason", "stop", "target", "invalidation", "ttl_minutes",
+        "rationale_tags",
+        "bull_case",
+        "bear_case",
+        "data_conflicts",
+        "invocation_reason",
+        "stop",
+        "target",
+        "invalidation",
+        "ttl_minutes",
     ],
 )
 def test_omitted_root_defaults_are_rejected_only_by_v2(field: str) -> None:
@@ -163,9 +171,13 @@ def test_zero_and_negative_prices_are_rejected(path: str, base, bad: int) -> Non
     if path.startswith(("stop.", "target.")):
         numeric = schema["$defs"]["PriceGeometryV2"]["properties"]["price"]
     elif path.startswith("invalidation."):
-        numeric = schema["$defs"]["InvalidationV2"]["properties"]["reference_price"]["anyOf"][0]
+        numeric = schema["$defs"]["InvalidationV2"]["properties"]["reference_price"][
+            "anyOf"
+        ][0]
     else:
-        numeric = schema["$defs"]["EntrySemanticsV2"]["properties"]["trigger_price"]["anyOf"][0]
+        numeric = schema["$defs"]["EntrySemanticsV2"]["properties"]["trigger_price"][
+            "anyOf"
+        ][0]
     assert numeric["exclusiveMinimum"] == 0
 
 
@@ -175,15 +187,22 @@ def test_blank_invalidation_category_rejected(category: str) -> None:
         LLMStructuredOutputV2.model_validate(
             with_value(trade(), "invalidation.category", category)
         )
-    assert output_json_schema("LLM_OUTPUT_V2")["$defs"]["InvalidationV2"]["properties"]["category"]["pattern"] == r"\S"
+    assert (
+        output_json_schema("LLM_OUTPUT_V2")["$defs"]["InvalidationV2"]["properties"][
+            "category"
+        ]["pattern"]
+        == r"\S"
+    )
 
 
 def test_valid_canonical_json_and_contextual_geometry() -> None:
     row = trade()
     output = LLMStructuredOutputV2.model_validate(row)
-    snapshot = SimpleNamespace(market=SimpleNamespace(
-        hype_context=SimpleNamespace(mark_price=100, mid_price=100)
-    ))
+    snapshot = SimpleNamespace(
+        market=SimpleNamespace(
+            hype_context=SimpleNamespace(mark_price=100, mid_price=100)
+        )
+    )
     validate_geometry(output, snapshot)
     wrong_direction = LLMStructuredOutputV2.model_validate(
         with_value(row, "stop.price", 105)
@@ -191,7 +210,9 @@ def test_valid_canonical_json_and_contextual_geometry() -> None:
     with pytest.raises(GeometryViolation):
         validate_geometry(wrong_direction, snapshot)
     with pytest.raises(ValidationError):
-        LLMStructuredOutputV2.model_validate(with_value(no_trade(), "stop", row["stop"]))
+        LLMStructuredOutputV2.model_validate(
+            with_value(no_trade(), "stop", row["stop"])
+        )
     with pytest.raises(ValidationError):
         LLMStructuredOutputV2.model_validate(with_value(row, "entry.mode", "NONE"))
     with pytest.raises(ValidationError):
@@ -213,6 +234,20 @@ def test_epoch003_is_draft_only_and_research_settings_match_epoch002() -> None:
     assert old_fields == new_fields
 
 
+def test_epoch004_is_inactive_and_matches_epoch003_except_identity() -> None:
+    old, _ = load_phase2_config(ROOT / "config/phase2/phase2_epoch_003.yaml")
+    new, _ = load_phase2_config(ROOT / "config/phase2/phase2_epoch_004.yaml")
+    assert new.phase2_epoch_id == "phase2_epoch_004"
+    assert new.database_path == "data/phase2/phase2_epoch_004.sqlite3"
+    new.assert_build_only()
+    old_values = old.model_dump()
+    new_values = new.model_dump()
+    for key in ("phase2_epoch_id", "database_path"):
+        old_values.pop(key)
+        new_values.pop(key)
+    assert new_values == old_values
+
+
 @pytest.mark.parametrize(
     ("base", "path", "value"),
     [
@@ -224,10 +259,16 @@ def test_epoch003_is_draft_only_and_research_settings_match_epoch002() -> None:
         (trade, "invalidation.category", "   "),
         (trade, "stop.price", "95"),
         (trade, "ttl_minutes", "60"),
-        (lambda: with_value(trade(), "entry.mode", "BREAKOUT"), "entry.trigger_price", 0),
+        (
+            lambda: with_value(trade(), "entry.mode", "BREAKOUT"),
+            "entry.trigger_price",
+            0,
+        ),
     ],
 )
-def test_transport_and_local_both_reject_statically_invalid_values(base, path, value) -> None:
+def test_transport_and_local_both_reject_statically_invalid_values(
+    base, path, value
+) -> None:
     row = with_value(base(), path, value)
     assert not Draft202012Validator(output_json_schema("LLM_OUTPUT_V2")).is_valid(row)
     with pytest.raises(ValidationError):
