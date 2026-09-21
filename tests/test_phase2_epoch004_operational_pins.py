@@ -1,4 +1,4 @@
-"""Isolated NON_SCORED tests for the production epoch003 pre-start gate."""
+"""Isolated NON_SCORED tests for the production epoch004 pre-start gate."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deploy.operations.phase2_epoch003_start_gate import (
+from deploy.operations.phase2_epoch004_start_gate import (
     check_identity,
     check_network_path,
 )
@@ -36,9 +36,9 @@ from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_sche
 def runtime_guard_module():
     path = (
         Path(__file__).resolve().parents[1]
-        / "deploy/operations/phase2_epoch003_runtime_worker.py"
+        / "deploy/operations/phase2_epoch004_runtime_worker.py"
     )
-    spec = importlib.util.spec_from_file_location("epoch003_runtime_worker_test", path)
+    spec = importlib.util.spec_from_file_location("epoch004_runtime_worker_test", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -57,7 +57,7 @@ def fixture(tmp_path: Path):
     repo = tmp_path / "NON_SCORED_source"
     (repo / "config/phase2").mkdir(parents=True)
     (repo / "prompts/phase2").mkdir(parents=True)
-    shutil.copy2(source / "config/phase2/phase2_epoch_003.yaml", repo / "config/phase2")
+    shutil.copy2(source / "config/phase2/phase2_epoch_004.yaml", repo / "config/phase2")
     shutil.copy2(source / "prompts/phase2/llm_v2.txt", repo / "prompts/phase2")
     (repo / "src").symlink_to(source / "src", target_is_directory=True)
     git(repo, "init", "-q")
@@ -67,7 +67,7 @@ def fixture(tmp_path: Path):
     git(repo, "commit", "-qm", "NON_SCORED fixture")
     commit = git(repo, "rev-parse", "HEAD")
     config, config_hash = load_phase2_config(
-        repo / "config/phase2/phase2_epoch_003.yaml"
+        repo / "config/phase2/phase2_epoch_004.yaml"
     )
     prompt_hash = file_sha256(repo / config.prompt_path)
     schema_hash = sha256_canonical(output_json_schema(config.output_schema_version))
@@ -86,7 +86,7 @@ def fixture(tmp_path: Path):
         output_schema_hash=schema_hash,
         database_schema_hash=db_schema_hash,
     )
-    database = tmp_path / "NON_SCORED_epoch003_gate.sqlite3"
+    database = tmp_path / "NON_SCORED_epoch004_gate.sqlite3"
     with sqlite3.connect(database) as db:
         db.row_factory = sqlite3.Row
         repository = Phase2Repository(db)
@@ -113,7 +113,7 @@ def fixture(tmp_path: Path):
         repo=str(repo),
         expected_commit=commit,
         expected_branch=git(repo, "branch", "--show-current"),
-        config="config/phase2/phase2_epoch_003.yaml",
+        config="config/phase2/phase2_epoch_004.yaml",
         expected_config_hash=config_hash,
         expected_prompt_hash=prompt_hash,
         expected_schema_hash=schema_hash,
@@ -151,9 +151,13 @@ def test_identity_fail_closed_without_scored_db_mutation(fixture):
     for field, wrong in (
         ("expected_commit", "0" * 40),
         ("expected_config_hash", "0" * 64),
+        ("expected_prompt_hash", "0" * 64),
         ("expected_schema_hash", "0" * 64),
         ("expected_db_schema_hash", "0" * 64),
         ("expected_epoch", "phase2_epoch_002"),
+        ("expected_epoch", "phase2_epoch_003"),
+        ("expected_model", "wrong-model"),
+        ("expected_reasoning", "wrong-effort"),
         ("expected_branch", "wrong"),
     ):
         old = getattr(args, field)
@@ -162,6 +166,12 @@ def test_identity_fail_closed_without_scored_db_mutation(fixture):
             check_identity(args, network_check=approved_network)
         setattr(args, field, old)
     bad = json.loads(grant.read_text())
+    old_epoch = dict(bad)
+    old_epoch["phase2_epoch_id"] = "phase2_epoch_003"
+    old_epoch["experiment_id"] = "phase2_epoch_003"
+    grant.write_text(json.dumps(old_epoch), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="authorization grant epoch mismatch"):
+        check_identity(args, network_check=approved_network)
     bad["authorization_phrase_sha256"] = "0" * 64
     grant.write_text(json.dumps(bad), encoding="utf-8")
     with pytest.raises(PermissionError):
@@ -255,18 +265,31 @@ def test_mullvad_gate_rejects_wrong_state_and_proxy(monkeypatch):
         )
 
 
-def test_historical_epoch003_gate_and_wrapper_remain_unchanged():
+def test_unit_pins_epoch004():
     root = Path(__file__).resolve().parents[1]
-    gate = (root / "deploy/operations/phase2_epoch003_start_gate.py").read_bytes()
-    wrapper = (
-        root / "deploy/operations/phase2_epoch003_runtime_worker.py"
-    ).read_bytes()
-    assert hashlib.sha256(gate).hexdigest() == (
-        "c6b96bea58b51f23c50c9a0d765ff1358c72557d3819c3c45e2eadf5e9329d1a"
-    )
-    assert hashlib.sha256(wrapper).hexdigest() == (
-        "de2754bc5688b4f0de7ecafca7a99efde502920584f08017dc593dac4259f430"
-    )
+    service = (root / "deploy/systemd/hypebot-phase2.service.template").read_text()
+    health = (
+        root / "deploy/systemd/hypebot-phase2-health.service.template"
+    ).read_text()
+    assert "phase2_epoch_002" not in service + health
+    assert "phase2_epoch_003" not in service + health
+    assert "phase2-epoch-003" not in service + health
+    assert "phase2_epoch_004" in service + health
+    assert "b14f551e9fe395f2371ce294745845adc949cbeb" in service
+    assert "8074bc4eb833779d7182d63b8a9545bbabf6e6ae2fcb70f1db194b3a1b4d5fd5" in service
+    assert "97318c27b3765780916efe010c3653fa8f8b097bdddd20ef711d40f41a5a1be4" in service
+    assert "gpt-5.6-terra" in service and "--expected-reasoning medium" in service
+    assert "phase2_epoch004_start_gate.py" in service
+    assert "SupplementaryGroups=hypebot-phase2-auth" in service
+    assert "--expected-grant-group hypebot-phase2-auth" in service
+    assert "--grant-group hypebot-phase2-auth" in service
+    assert "ConditionPathExists=" not in service
+    assert "phase2_epoch004_runtime_worker.py" in service
+    assert "phase2.writer.lock" in service and "phase2.supervisor.lock" in service
+    assert "phase2_epoch_004.sqlite3" in service + health
+    assert "phase2-epoch-004.grant.json" in service + health
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in service
+    assert service.count("AF_NETLINK") == 1
 
 
 def test_runtime_path_guard_allows_only_a_validated_provider_call(monkeypatch):
