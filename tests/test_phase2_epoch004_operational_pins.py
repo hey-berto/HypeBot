@@ -292,6 +292,17 @@ def test_unit_pins_epoch004():
     assert service.count("AF_NETLINK") == 1
 
 
+def test_health_timer_bootstraps_from_timer_activation_not_host_boot():
+    root = Path(__file__).resolve().parents[1]
+    timer = (
+        root / "deploy/systemd/hypebot-phase2-health.timer.template"
+    ).read_text()
+    assert "OnActiveSec=5min" in timer
+    assert "OnUnitActiveSec=5min" in timer
+    assert "OnBootSec=" not in timer
+    assert "Unit=hypebot-phase2-health.service" in timer
+
+
 def test_runtime_path_guard_allows_only_a_validated_provider_call(monkeypatch):
     module = runtime_guard_module()
     from hype_autopilot.phase2.provider import OpenAIResponsesProvider

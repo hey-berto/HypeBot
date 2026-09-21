@@ -2,7 +2,7 @@
 Description=Run HYPE Autopilot Phase 2 operational health check every five minutes
 
 [Timer]
-OnBootSec=5min
+OnActiveSec=5min
 OnUnitActiveSec=5min
 AccuracySec=15s
 Persistent=true

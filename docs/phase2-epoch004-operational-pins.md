@@ -41,6 +41,13 @@ The service retains `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 and all other hardening. Grant mode remains root-owned, dedicated-group-readable
 `0640`, not world-readable.
 
+The health timer is bootstrapped relative to timer activation with
+`OnActiveSec=5min`, then repeats from the health service's last activation with
+`OnUnitActiveSec=5min`. It intentionally does not use `OnBootSec`: systemd
+immediately elapses an already-past boot-relative timer, which is not the
+required five-minute post-activation bootstrap. This timer correction is
+operational-only and does not change the health service or research runtime.
+
 Installation is a later privileged operation, not part of this review task.
 After independent review, an operator must first verify source and operations
 remote SHAs, clean checkouts, stopped service/timer and absent effective writer;
