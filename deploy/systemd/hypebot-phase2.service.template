@@ -1,8 +1,7 @@
 [Unit]
 Description=HYPE Autopilot Phase 2 epoch004 external single-writer supervisor (review template)
-After=network-online.target time-sync.target hypebot-phase1.service
+After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
-Requires=hypebot-phase1.service
 OnFailure=hypebot-alert@%n.service
 StartLimitIntervalSec=900
 StartLimitBurst=5
