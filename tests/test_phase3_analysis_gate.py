@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from hype_autopilot.phase2.storage import Phase2Repository
+from hype_autopilot.hashing import canonical_json, sha256_canonical
+from hype_autopilot.phase2.storage import (
+    INITIAL_EVIDENCE_WINDOW_RULE,
+    Phase2Repository,
+)
 from hype_autopilot.phase3.gate import (
     GateEvidence,
     PairEvidence,
@@ -140,7 +144,7 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     repository.initialize()
     activation = datetime(2026, 9, 4, 3, 45, tzinfo=UTC)
     manifest = {
-        "phase2_epoch_id": "phase2_epoch_002",
+        "phase2_epoch_id": "phase2_epoch_005",
         "frozen_contract": {
             "model": "gpt-5.6-terra",
             "model_version": "gpt-5.6-terra",
@@ -151,8 +155,8 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
         "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (
             "m",
-            "phase2_epoch_002",
-            "phase2_epoch_002",
+            "phase2_epoch_005",
+            "phase2_epoch_005",
             activation.isoformat(),
             "g",
             "c",
@@ -165,9 +169,9 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     )
     start = activation + timedelta(seconds=1)
     repository.record_recovery_event(
-        phase2_epoch_id="phase2_epoch_002",
+        phase2_epoch_id="phase2_epoch_005",
         event_type="PROSPECTIVE_START_ESTABLISHED",
-        source_identity="phase2_epoch_002",
+        source_identity="phase2_epoch_005",
         payload={"prospective_start": start.isoformat()},
         occurred_at=start,
     )
@@ -176,7 +180,7 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
         "WHERE event_type='PROSPECTIVE_START_ESTABLISHED'"
     ).fetchone()[0]
     repository.establish_initial_evidence_window(
-        phase2_epoch_id="phase2_epoch_002",
+        phase2_epoch_id="phase2_epoch_005",
         prospective_start=start,
         prospective_start_integrity_hash=anchor_hash,
     )
@@ -203,7 +207,7 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
                 f"h{index}",
                 f"s{index}",
                 at.isoformat(),
-                "phase2_epoch_002",
+                "phase2_epoch_005",
                 "SCORED_PROSPECTIVE",
                 1,
                 "{}",
@@ -270,7 +274,7 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     assert report["research_activation_timestamp"] == evidence_start.isoformat()
     assert report["effective_evidence_start"] == evidence_start.isoformat()
     assert report["phase3_calendar_floor_anchor"] == evidence_start.isoformat()
-    assert report["evidence_clock_reset_applied"] is True
+    assert report["evidence_clock_reset_applied"] is False
 
     # A later failure cannot move the already-established clock.
     db = sqlite3.connect(database)
@@ -330,3 +334,221 @@ def test_operational_telemetry_rejects_manifest_time_fallback(tmp_path):
 
     with pytest.raises(ValueError, match="exactly one immutable"):
         collect_operational_telemetry(database)
+
+
+def _valid_epoch005_window_database(tmp_path: Path) -> tuple[Path, datetime]:
+    database = tmp_path / "valid-epoch005-window.sqlite3"
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    repository.initialize()
+    activation = datetime(2026, 9, 22, 4, 38, tzinfo=UTC)
+    start = activation + timedelta(seconds=7)
+    manifest = {
+        "phase2_epoch_id": "phase2_epoch_005",
+        "frozen_contract": {
+            "model": "gpt-5.6-terra",
+            "model_version": "gpt-5.6-terra",
+            "resource_isolation": {"api_budget_usd_per_day": 10.0},
+        },
+    }
+    db.execute(
+        "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "m",
+            "phase2_epoch_005",
+            "phase2_epoch_005",
+            activation.isoformat(),
+            "g",
+            "c",
+            "p",
+            "o",
+            "mh",
+            "d",
+            json.dumps(manifest),
+        ),
+    )
+    repository.record_recovery_event(
+        phase2_epoch_id="phase2_epoch_005",
+        event_type="PROSPECTIVE_START_ESTABLISHED",
+        source_identity="phase2_epoch_005",
+        payload={"prospective_start": start.isoformat()},
+        occurred_at=start,
+    )
+    anchor_hash = db.execute(
+        "SELECT integrity_hash FROM phase2_recovery_events"
+    ).fetchone()[0]
+    repository.establish_initial_evidence_window(
+        phase2_epoch_id="phase2_epoch_005",
+        prospective_start=start,
+        prospective_start_integrity_hash=anchor_hash,
+    )
+    db.close()
+    return database, start
+
+
+def _open_tamper_connection(database: Path) -> sqlite3.Connection:
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    db.execute("DROP TRIGGER immutable_phase2_evidence_windows_update")
+    return db
+
+
+def test_operational_telemetry_rejects_window_rule_column_payload_mismatch(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    db = _open_tamper_connection(database)
+    db.execute("PRAGMA ignore_check_constraints=ON")
+    db.execute("UPDATE phase2_evidence_windows SET rule_version='OPERATIONAL_RESET_V1'")
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="evidence-window integrity"):
+        collect_operational_telemetry(database)
+
+
+def test_operational_telemetry_rejects_window_anchor_hash_column_payload_mismatch(
+    tmp_path,
+):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    db = _open_tamper_connection(database)
+    db.execute(
+        "UPDATE phase2_evidence_windows SET prospective_start_integrity_hash=?",
+        ("0" * 64,),
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="evidence-window integrity"):
+        collect_operational_telemetry(database)
+
+
+@pytest.mark.parametrize("tamper", ["missing", "payload"])
+def test_operational_telemetry_rejects_missing_or_tampered_start_anchor(
+    tmp_path, tamper
+):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    db = sqlite3.connect(database)
+    if tamper == "missing":
+        db.execute("DROP TRIGGER immutable_phase2_recovery_events_delete")
+        db.execute("DELETE FROM phase2_recovery_events")
+    else:
+        db.execute("DROP TRIGGER immutable_phase2_recovery_events_update")
+        db.execute(
+            "UPDATE phase2_recovery_events SET payload_json=?",
+            ('{"tampered":true}',),
+        )
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="prospective-start anchor"):
+        collect_operational_telemetry(database)
+
+
+def test_operational_telemetry_recomputes_boundary_from_verified_anchor(tmp_path):
+    database, start = _valid_epoch005_window_database(tmp_path)
+    wrong_boundary = (start + timedelta(minutes=22)).replace(
+        minute=0, second=0, microsecond=0
+    )
+    db = _open_tamper_connection(database)
+    row = db.execute("SELECT payload_json FROM phase2_evidence_windows").fetchone()
+    payload = json.loads(row["payload_json"])
+    payload["first_eligible_boundary"] = wrong_boundary.isoformat()
+    db.execute(
+        "UPDATE phase2_evidence_windows SET first_eligible_boundary=?,payload_json=?,integrity_hash=?",
+        (
+            wrong_boundary.isoformat(),
+            canonical_json(payload),
+            sha256_canonical(payload),
+        ),
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="boundary differs"):
+        collect_operational_telemetry(database)
+
+
+def test_operational_telemetry_rejects_unsupported_reason_rule_combination(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    db = _open_tamper_connection(database)
+    db.execute("PRAGMA ignore_check_constraints=ON")
+    row = db.execute("SELECT payload_json FROM phase2_evidence_windows").fetchone()
+    payload = json.loads(row["payload_json"])
+    payload["reason_code"] = "INITIAL_PROSPECTIVE_START"
+    payload["rule_version"] = "INITIAL_PROSPECTIVE_START"
+    db.execute(
+        "UPDATE phase2_evidence_windows SET rule_version=?,reason_code=?,payload_json=?,integrity_hash=?",
+        (
+            payload["rule_version"],
+            payload["reason_code"],
+            canonical_json(payload),
+            sha256_canonical(payload),
+        ),
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="unsupported evidence-window"):
+        collect_operational_telemetry(database)
+
+
+def test_valid_epoch005_fresh_start_has_no_clock_reset(tmp_path):
+    database, start = _valid_epoch005_window_database(tmp_path)
+    report = collect_operational_telemetry(database)
+    assert report["effective_evidence_start"] == datetime(
+        2026, 9, 22, 4, 45, tzinfo=UTC
+    ).isoformat()
+    assert report["effective_evidence_start"] != start.isoformat()
+    assert report["evidence_clock_reset_applied"] is False
+    db = sqlite3.connect(database)
+    assert db.execute(
+        "SELECT rule_version FROM phase2_evidence_windows"
+    ).fetchone()[0] == INITIAL_EVIDENCE_WINDOW_RULE
+    db.close()
+
+
+def test_genuine_operational_reset_preserves_reset_reporting(tmp_path):
+    database = tmp_path / "operational-reset.sqlite3"
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    repository.initialize()
+    activation = datetime(2026, 9, 22, 3, 45, tzinfo=UTC)
+    manifest = {
+        "phase2_epoch_id": "phase2_epoch_005",
+        "frozen_contract": {
+            "model": "gpt-5.6-terra",
+            "model_version": "gpt-5.6-terra",
+            "resource_isolation": {"api_budget_usd_per_day": 10.0},
+        },
+    }
+    db.execute(
+        "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "m",
+            "phase2_epoch_005",
+            "phase2_epoch_005",
+            activation.isoformat(),
+            "g",
+            "c",
+            "p",
+            "o",
+            "mh",
+            "d",
+            json.dumps(manifest),
+        ),
+    )
+    reset_at = activation + timedelta(minutes=30)
+    repository.record_operational_deployment(
+        deployment_id="reset-v1",
+        phase2_epoch_id="phase2_epoch_005",
+        base_manifest_hash="mh",
+        source_commit="a" * 40,
+        database_schema_hash="b" * 64,
+        deployed_at=reset_at,
+    )
+    repository.set_evidence_window_start(
+        window_id="reset-window-v1",
+        phase2_epoch_id="phase2_epoch_005",
+        first_eligible_boundary=reset_at,
+        deployment_id="reset-v1",
+    )
+    db.close()
+    report = collect_operational_telemetry(database)
+    assert report["effective_evidence_start"] == reset_at.isoformat()
+    assert report["evidence_clock_reset_applied"] is True

@@ -7,7 +7,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from hype_autopilot.clock import next_quarter_hour
 from hype_autopilot.hashing import sha256_canonical
+from hype_autopilot.phase2.storage import (
+    INITIAL_EVIDENCE_WINDOW_RULE,
+    OPERATIONAL_RESET_RULE,
+)
 
 PAIR_STRATEGIES = {
     "LLM_V1__vs__QUANT_TREND_V1": ("LLM_V1", "QUANT_TREND"),
@@ -68,6 +73,121 @@ def _supervisor_relaunches(path: str | Path | None, activation: datetime) -> int
         if timestamp >= activation and row.get("event") == "SCHEDULER_PROCESS_START":
             starts += 1
     return max(0, starts - 1)
+
+
+def _validated_evidence_window(
+    db: sqlite3.Connection, *, phase2_epoch_id: str
+) -> tuple[datetime, bool]:
+    """Independently verify the immutable Phase 2 evidence-clock anchor."""
+    fields = (
+        "window_id",
+        "phase2_epoch_id",
+        "first_eligible_boundary",
+        "deployment_id",
+        "prospective_start_integrity_hash",
+        "established_at",
+        "rule_version",
+        "reason_code",
+    )
+    rows = db.execute(
+        f"SELECT {','.join(fields)},payload_json,integrity_hash "
+        "FROM phase2_evidence_windows WHERE phase2_epoch_id=?",
+        (phase2_epoch_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("exactly one immutable Phase 2 evidence window is required")
+    row = rows[0]
+    try:
+        payload = json.loads(row["payload_json"])
+        boundary = datetime.fromisoformat(row["first_eligible_boundary"]).astimezone(UTC)
+        established_at = datetime.fromisoformat(row["established_at"]).astimezone(UTC)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("Phase 2 evidence-window serialization is invalid") from error
+    expected_payload = {field: row[field] for field in fields}
+    if (
+        payload != expected_payload
+        or sha256_canonical(payload) != row["integrity_hash"]
+        or row["phase2_epoch_id"] != phase2_epoch_id
+    ):
+        raise ValueError("Phase 2 evidence-window integrity validation failed")
+
+    identity = (row["reason_code"], row["rule_version"])
+    if identity == ("INITIAL_PROSPECTIVE_START", INITIAL_EVIDENCE_WINDOW_RULE):
+        if row["deployment_id"] is not None or not row["prospective_start_integrity_hash"]:
+            raise ValueError("fresh-start evidence-window identity is invalid")
+        anchors = db.execute(
+            "SELECT phase2_epoch_id,event_type,source_identity,occurred_at,"
+            "payload_json,integrity_hash FROM phase2_recovery_events "
+            "WHERE integrity_hash=?",
+            (row["prospective_start_integrity_hash"],),
+        ).fetchall()
+        if len(anchors) != 1:
+            raise ValueError("prospective-start anchor is missing or ambiguous")
+        anchor = anchors[0]
+        try:
+            anchor_payload = json.loads(anchor["payload_json"])
+            anchor_time = datetime.fromisoformat(anchor["occurred_at"]).astimezone(UTC)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("prospective-start anchor serialization is invalid") from error
+        expected_anchor = {
+            "phase2_epoch_id": phase2_epoch_id,
+            "event_type": "PROSPECTIVE_START_ESTABLISHED",
+            "source_identity": phase2_epoch_id,
+            "occurred_at": anchor["occurred_at"],
+            "details": {"prospective_start": anchor["occurred_at"]},
+        }
+        if (
+            anchor_payload != expected_anchor
+            or sha256_canonical(anchor_payload) != anchor["integrity_hash"]
+            or anchor["integrity_hash"] != row["prospective_start_integrity_hash"]
+            or anchor["phase2_epoch_id"] != phase2_epoch_id
+            or anchor["event_type"] != "PROSPECTIVE_START_ESTABLISHED"
+            or anchor["source_identity"] != phase2_epoch_id
+            or established_at != anchor_time
+        ):
+            raise ValueError("prospective-start anchor integrity validation failed")
+        calculated = next_quarter_hour(anchor_time)
+        if calculated <= anchor_time:
+            calculated += timedelta(minutes=15)
+        if boundary != calculated:
+            raise ValueError("evidence-window boundary differs from prospective start")
+        return boundary, False
+
+    if identity == ("POST_OPERATIONAL_FIX_PROSPECTIVE_RESET", OPERATIONAL_RESET_RULE):
+        if row["prospective_start_integrity_hash"] is not None or not row["deployment_id"]:
+            raise ValueError("operational-reset evidence-window identity is invalid")
+        deployment = db.execute(
+            "SELECT deployment_id,phase2_epoch_id,base_manifest_hash,source_commit,"
+            "database_schema_hash,classification,deployed_at,payload_json,integrity_hash "
+            "FROM phase2_operational_deployments WHERE deployment_id=?",
+            (row["deployment_id"],),
+        ).fetchone()
+        if deployment is None:
+            raise ValueError("operational-reset deployment identity is invalid")
+        deployment_payload = json.loads(deployment["payload_json"])
+        expected_deployment = {
+            field: deployment[field]
+            for field in (
+                "deployment_id",
+                "phase2_epoch_id",
+                "base_manifest_hash",
+                "source_commit",
+                "database_schema_hash",
+                "classification",
+                "deployed_at",
+            )
+        }
+        if (
+            deployment_payload != expected_deployment
+            or sha256_canonical(deployment_payload) != deployment["integrity_hash"]
+            or deployment["phase2_epoch_id"] != phase2_epoch_id
+            or deployment["classification"] != "OPERATIONAL_ONLY"
+            or deployment["deployed_at"] != row["established_at"]
+        ):
+            raise ValueError("operational-reset deployment identity is invalid")
+        return boundary, True
+
+    raise ValueError("unsupported evidence-window reason/rule combination")
 
 
 def _coeligibility_by_comparison(
@@ -164,24 +284,9 @@ def collect_operational_telemetry(
         ).astimezone(UTC)
         if not _table_exists(db, "phase2_evidence_windows"):
             raise ValueError("immutable Phase 2 evidence window is required")
-        windows = db.execute(
-            "SELECT first_eligible_boundary,payload_json,integrity_hash "
-            "FROM phase2_evidence_windows WHERE phase2_epoch_id=?",
-            (manifest["phase2_epoch_id"],),
-        ).fetchall()
-        if len(windows) != 1:
-            raise ValueError("exactly one immutable Phase 2 evidence window is required")
-        window_payload = json.loads(windows[0]["payload_json"])
-        if (
-            sha256_canonical(window_payload) != windows[0]["integrity_hash"]
-            or window_payload.get("phase2_epoch_id") != manifest["phase2_epoch_id"]
-            or window_payload.get("first_eligible_boundary")
-            != windows[0]["first_eligible_boundary"]
-        ):
-            raise ValueError("Phase 2 evidence-window integrity validation failed")
-        evidence_start = datetime.fromisoformat(
-            windows[0]["first_eligible_boundary"]
-        ).astimezone(UTC)
+        evidence_start, evidence_clock_reset_applied = _validated_evidence_window(
+            db, phase2_epoch_id=manifest["phase2_epoch_id"]
+        )
         frozen = manifest["frozen_contract"]
         cycles = db.execute(
             "SELECT scheduled_at, status FROM research_cycles "
@@ -234,7 +339,7 @@ def collect_operational_telemetry(
             "research_activation_timestamp": evidence_start.isoformat(),
             "effective_evidence_start": evidence_start.isoformat(),
             "phase3_calendar_floor_anchor": evidence_start.isoformat(),
-            "evidence_clock_reset_applied": evidence_start != activation,
+            "evidence_clock_reset_applied": evidence_clock_reset_applied,
             "latest_boundary": max(boundaries).isoformat() if boundaries else None,
             "cycle_status_counts": dict(Counter(row["status"] for row in cycles)),
             "missing_boundaries": _missing_boundaries(boundaries),
