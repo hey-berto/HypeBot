@@ -33,3 +33,28 @@ The research candidate must receive independent review before an epoch005
 operational pin candidate is installed. Activation requires a separate explicit
 authorization and a fresh DB, receipt, grant, and manifest. Epoch004 remains a
 sealed failed-activation incident and is never copied, relabelled, or reused.
+
+## Final Evidence Start authorization boundary
+
+The operational telemetry field `preliminary_first_four_cycle_check` proves
+only that the exact first four expected `SCORED_PROSPECTIVE` cycle rows are
+`COMPLETE` and scoreable. It always reports
+`authorizes_evidence_start=false`; later four-cycle streaks and non-scored rows
+cannot substitute for the initial four.
+
+Final Evidence Start authorization remains the controlled activation review.
+For each of those exact four boundaries, that review must independently prove:
+
+- complete snapshot/cycle lineage for epoch005 and the frozen source/config;
+- a valid `LLM_OUTPUT_V2`, matching raw-response plaintext/SHA lineage, and
+  zero tool calls;
+- complete expected Quant, LLM, Hybrid and Detector decision lineage;
+- simulator/order/fill/trade state consistency under the frozen simulator;
+- zero missing or unresolved boundary, duplicate row, backfill, FK violation,
+  or SQLite integrity failure;
+- one effective writer, healthy supervisor/scheduler/timer, and the approved
+  fail-closed Mullvad route.
+
+The Evidence Start Report must record each check and receive the separately
+authorized final review. No value emitted by `collect_operational_telemetry`
+alone authorizes scored Evidence Start.

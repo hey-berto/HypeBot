@@ -651,6 +651,7 @@ def _insert_operational_cycle(
     status: str = "COMPLETE",
     scoreable: bool = True,
     reason: str | None = None,
+    observation_class: str = "SCORED_PROSPECTIVE",
 ) -> None:
     details = {"scoreable": scoreable}
     if reason is not None:
@@ -663,7 +664,7 @@ def _insert_operational_cycle(
         (
             f"cycle-{scheduled_at.isoformat()}",
             scheduled_at.isoformat(),
-            "SCORED_PROSPECTIVE",
+            observation_class,
             scheduled_at.isoformat(),
             status,
             json.dumps(details),
@@ -684,19 +685,21 @@ def test_missing_first_boundary_is_not_hidden_by_four_later_successes(tmp_path):
         database, observation_cutoff=first + timedelta(minutes=60)
     )
     assert report["missing_boundaries"] == [first.isoformat()]
-    assert report["first_four_boundary_acceptance"]["accepted"] is False
-    assert report["first_four_boundary_acceptance"]["results"][0]["status"] == "ABSENT"
+    check = report["preliminary_first_four_cycle_check"]
+    assert check["passed"] is False
+    assert check["authorizes_evidence_start"] is False
+    assert check["results"][0]["status"] == "ABSENT"
 
 
-def test_no_cycles_after_window_reports_each_due_boundary_missing(tmp_path):
+def test_no_cycles_after_window_reports_only_overdue_boundaries_missing(tmp_path):
     database, _ = _valid_epoch005_window_database(tmp_path)
     first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
     report = collect_operational_telemetry(
-        database, observation_cutoff=first + timedelta(minutes=15)
+        database, observation_cutoff=first + timedelta(minutes=20, seconds=1)
     )
-    assert report["missing_boundaries"] == [
-        first.isoformat(),
-        (first + timedelta(minutes=15)).isoformat(),
+    assert report["missing_boundaries"] == [first.isoformat()]
+    assert report["in_progress_boundaries"] == [
+        (first + timedelta(minutes=15)).isoformat()
     ]
 
 
@@ -706,7 +709,7 @@ def test_internal_absent_boundary_is_reported(tmp_path):
     _insert_operational_cycle(database, scheduled_at=first)
     _insert_operational_cycle(database, scheduled_at=first + timedelta(minutes=30))
     report = collect_operational_telemetry(
-        database, observation_cutoff=first + timedelta(minutes=30)
+        database, observation_cutoff=first + timedelta(minutes=36)
     )
     assert report["missing_boundaries"] == [
         (first + timedelta(minutes=15)).isoformat()
@@ -726,7 +729,7 @@ def test_rejected_downtime_boundary_is_present_but_not_successful(tmp_path):
     report = collect_operational_telemetry(database, observation_cutoff=first)
     assert report["missing_boundaries"] == []
     assert report["rejected_process_downtime_boundaries"] == [first.isoformat()]
-    assert report["first_four_boundary_acceptance"]["accepted"] is False
+    assert report["preliminary_first_four_cycle_check"]["passed"] is False
 
 
 def test_boundary_not_yet_scheduled_is_not_reported_missing(tmp_path):
@@ -738,7 +741,7 @@ def test_boundary_not_yet_scheduled_is_not_reported_missing(tmp_path):
     assert report["missing_boundaries"] == []
 
 
-def test_first_four_acceptance_requires_exact_initial_boundaries(tmp_path):
+def test_preliminary_first_four_check_requires_exact_initial_boundaries(tmp_path):
     database, _ = _valid_epoch005_window_database(tmp_path)
     first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
     for offset in range(4):
@@ -749,7 +752,86 @@ def test_first_four_acceptance_requires_exact_initial_boundaries(tmp_path):
         database, observation_cutoff=first + timedelta(minutes=45)
     )
     assert report["missing_boundaries"] == []
-    assert report["first_four_boundary_acceptance"]["accepted"] is True
-    assert report["first_four_boundary_acceptance"]["required_boundaries"] == [
+    check = report["preliminary_first_four_cycle_check"]
+    assert check["passed"] is True
+    assert check["authorizes_evidence_start"] is False
+    assert check["required_boundaries"] == [
         (first + timedelta(minutes=15 * offset)).isoformat() for offset in range(4)
+    ]
+    assert report["final_evidence_start_authorization"] == {
+        "authorized": False,
+        "status": "REQUIRES_CONTROLLED_ACTIVATION_EVIDENCE_REVIEW",
+        "procedure": (
+            "docs/phase2_epoch005_evidence_window_review.md"
+            "#final-evidence-start-authorization-boundary"
+        ),
+    }
+
+
+def test_non_scored_cycles_cannot_mask_scored_startup_boundaries(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    for offset in range(4):
+        _insert_operational_cycle(
+            database,
+            scheduled_at=first + timedelta(minutes=15 * offset),
+            observation_class="NON_SCORED_ACCEPTANCE",
+        )
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=45)
+    )
+    assert report["preliminary_first_four_cycle_check"]["passed"] is False
+    assert report["preliminary_first_four_cycle_check"][
+        "authorizes_evidence_start"
+    ] is False
+    assert report["missing_boundaries"] == [
+        first.isoformat(),
+        (first + timedelta(minutes=15)).isoformat(),
+    ]
+    assert report["in_progress_boundaries"] == [
+        (first + timedelta(minutes=30)).isoformat(),
+        (first + timedelta(minutes=45)).isoformat(),
+    ]
+
+
+def test_scoreable_cycles_without_downstream_lineage_never_authorize_start(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    for offset in range(4):
+        _insert_operational_cycle(
+            database, scheduled_at=first + timedelta(minutes=15 * offset)
+        )
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=45)
+    )
+    assert report["preliminary_first_four_cycle_check"]["passed"] is True
+    assert report["final_evidence_start_authorization"]["authorized"] is False
+
+
+def test_boundary_inside_scheduler_and_completion_grace_is_in_progress(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(seconds=1)
+    )
+    assert report["missing_boundaries"] == []
+    assert report["in_progress_boundaries"] == [first.isoformat()]
+    assert report["boundary_reporting_policy"] == {
+        "scheduler_execution_grace_seconds": 5,
+        "completion_allowance_seconds": 1200,
+        "completion_allowance_source": (
+            "INSTALLED_PHASE2_HEALTH_MAXIMUM_BOUNDARY_AGE_20_MINUTES"
+        ),
+    }
+
+
+def test_absent_boundary_becomes_missing_after_reporting_deadline(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=20, seconds=1)
+    )
+    assert report["missing_boundaries"] == [first.isoformat()]
+    assert report["in_progress_boundaries"] == [
+        (first + timedelta(minutes=15)).isoformat()
     ]

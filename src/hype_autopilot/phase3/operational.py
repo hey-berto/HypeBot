@@ -27,6 +27,8 @@ PAIR_STRATEGIES = {
         "QUANT_MR",
     ),
 }
+SCHEDULER_EXECUTION_GRACE = timedelta(seconds=5)
+BOUNDARY_COMPLETION_ALLOWANCE = timedelta(minutes=20)
 
 
 def _read_only_connection(path: str | Path) -> sqlite3.Connection:
@@ -47,21 +49,37 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _missing_boundaries(
+def _boundary_observation(
     values: list[datetime], *, evidence_start: datetime, observation_cutoff: datetime
-) -> list[str]:
+) -> dict[str, Any]:
     observed = {ensure_utc(value) for value in values}
     missing: list[str] = []
+    in_progress: list[str] = []
     cursor = ensure_utc(evidence_start)
     cutoff = ensure_utc(observation_cutoff)
     while cursor <= cutoff:
-        if cursor not in observed:
+        reporting_deadline = cursor + max(
+            SCHEDULER_EXECUTION_GRACE, BOUNDARY_COMPLETION_ALLOWANCE
+        )
+        if cursor not in observed and cutoff < reporting_deadline:
+            in_progress.append(cursor.isoformat())
+        elif cursor not in observed:
             missing.append(cursor.isoformat())
         cursor += timedelta(minutes=15)
-    return missing
+    return {
+        "missing": missing,
+        "in_progress": in_progress,
+        "next_not_yet_due": cursor.isoformat(),
+        "scheduler_execution_grace_seconds": int(
+            SCHEDULER_EXECUTION_GRACE.total_seconds()
+        ),
+        "completion_allowance_seconds": int(
+            BOUNDARY_COMPLETION_ALLOWANCE.total_seconds()
+        ),
+    }
 
 
-def _startup_boundary_acceptance(
+def _preliminary_startup_cycle_check(
     cycles: list[sqlite3.Row], *, evidence_start: datetime
 ) -> dict[str, Any]:
     required = [evidence_start + timedelta(minutes=15 * index) for index in range(4)]
@@ -91,7 +109,9 @@ def _startup_boundary_acceptance(
             }
         )
     return {
-        "accepted": accepted,
+        "passed": accepted,
+        "authorizes_evidence_start": False,
+        "scope": "PRELIMINARY_CYCLE_PRESENCE_STATUS_SCOREABILITY_ONLY",
         "required_boundaries": [value.isoformat() for value in required],
         "results": results,
     }
@@ -333,7 +353,8 @@ def collect_operational_telemetry(
         frozen = manifest["frozen_contract"]
         cycles = db.execute(
             "SELECT scheduled_at,status,details_json FROM research_cycles "
-            "WHERE scheduled_at>=? AND scheduled_at<=? ORDER BY scheduled_at",
+            "WHERE observation_class='SCORED_PROSPECTIVE' "
+            "AND scheduled_at>=? AND scheduled_at<=? ORDER BY scheduled_at",
             (evidence_start.isoformat(), cutoff.isoformat()),
         ).fetchall()
         boundaries = [
@@ -384,6 +405,11 @@ def collect_operational_telemetry(
                 details = {}
             if row["status"] == "REJECTED" and details.get("reason") == "PROCESS_DOWNTIME":
                 downtime_boundaries.append(row["scheduled_at"])
+        boundary_observation = _boundary_observation(
+            boundaries,
+            evidence_start=evidence_start,
+            observation_cutoff=cutoff,
+        )
         return {
             "telemetry_scope": "OPERATIONAL_ONLY_NO_PERFORMANCE_FIELDS",
             "activation_timestamp": activation.isoformat(),
@@ -394,15 +420,32 @@ def collect_operational_telemetry(
             "observation_cutoff": cutoff.isoformat(),
             "latest_boundary": max(boundaries).isoformat() if boundaries else None,
             "cycle_status_counts": dict(Counter(row["status"] for row in cycles)),
-            "missing_boundaries": _missing_boundaries(
-                boundaries,
-                evidence_start=evidence_start,
-                observation_cutoff=cutoff,
-            ),
+            "missing_boundaries": boundary_observation["missing"],
+            "in_progress_boundaries": boundary_observation["in_progress"],
+            "next_not_yet_due_boundary": boundary_observation["next_not_yet_due"],
+            "boundary_reporting_policy": {
+                "scheduler_execution_grace_seconds": boundary_observation[
+                    "scheduler_execution_grace_seconds"
+                ],
+                "completion_allowance_seconds": boundary_observation[
+                    "completion_allowance_seconds"
+                ],
+                "completion_allowance_source": (
+                    "INSTALLED_PHASE2_HEALTH_MAXIMUM_BOUNDARY_AGE_20_MINUTES"
+                ),
+            },
             "rejected_process_downtime_boundaries": downtime_boundaries,
-            "first_four_boundary_acceptance": _startup_boundary_acceptance(
+            "preliminary_first_four_cycle_check": _preliminary_startup_cycle_check(
                 cycles, evidence_start=evidence_start
             ),
+            "final_evidence_start_authorization": {
+                "authorized": False,
+                "status": "REQUIRES_CONTROLLED_ACTIVATION_EVIDENCE_REVIEW",
+                "procedure": (
+                    "docs/phase2_epoch005_evidence_window_review.md"
+                    "#final-evidence-start-authorization-boundary"
+                ),
+            },
             "collection_gaps": {"total": gaps["total"], "open": gaps["open"] or 0},
             "duplicates": {
                 key: db.execute(query).fetchone()[0]
