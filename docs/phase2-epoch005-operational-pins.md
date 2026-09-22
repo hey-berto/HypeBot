@@ -8,7 +8,7 @@ systemd hardening controls.
 
 ## Frozen identities
 
-- Research commit: `012e78811912ee3a590b6523756f42bc74c0f930`
+- Research commit: `41b53508f123b916e18d374cda5258ce6856ad58`
 - Epoch: `phase2_epoch_005`
 - Config: `config/phase2/phase2_epoch_005.yaml`
 - Config hash: `2118bb72f73495a190eb7550408c260de44da84153868da96f94f886b7030b12`
