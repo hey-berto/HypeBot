@@ -110,4 +110,11 @@ def test_operational_deployment_authorizes_schema_overlay_and_resets_clock(tmp_p
             first_eligible_boundary=FIRST + timedelta(minutes=16),
             deployment_id="phase2-operational-recovery-v1",
         )
+    with pytest.raises(RuntimeError, match="immutable.*window conflict"):
+        repository.set_evidence_window_start(
+            window_id="later-reset",
+            phase2_epoch_id="phase2_epoch_002",
+            first_eligible_boundary=FIRST + timedelta(minutes=30),
+            deployment_id="phase2-operational-recovery-v1",
+        )
     repository.db.close()

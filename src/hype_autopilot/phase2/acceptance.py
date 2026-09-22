@@ -28,6 +28,7 @@ from hype_autopilot.phase2.runner import FailClosedLLMRunner
 from hype_autopilot.phase2.scheduler import (
     establish_prospective_start,
     planned_phase2_boundary,
+    record_worker_start_attempt,
     run_phase2_boundary,
 )
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
@@ -357,10 +358,17 @@ def run_scheduler_acceptance(
         )
 
     first_pipeline = build_pipeline()
+    attempt = "non-scored-scheduler-acceptance-start"
+    record_worker_start_attempt(
+        first_pipeline,
+        now=first_boundary - timedelta(seconds=1),
+        source_identity=attempt,
+    )
     establish_prospective_start(
         first_pipeline,
         manifest=manifest,
         now=first_boundary - timedelta(seconds=1),
+        worker_attempt_identity=attempt,
     )
     first_status = run_phase2_boundary(
         first_pipeline, manifest=manifest, boundary=first_boundary

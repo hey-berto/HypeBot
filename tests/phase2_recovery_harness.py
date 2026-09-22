@@ -38,6 +38,7 @@ from hype_autopilot.phase2.runner import FailClosedLLMRunner
 from hype_autopilot.phase2.scheduler import (
     establish_prospective_start,
     planned_phase2_boundary,
+    record_worker_start_attempt,
     run_phase2_boundary,
 )
 from hype_autopilot.phase2.storage import Phase2Repository, phase2_database_schema_hash
@@ -469,10 +470,17 @@ def run_worker(
         database_schema_hash=phase2_database_schema_hash(),
         recovery_fault_hook=recovery_fault,
     )
+    attempt = f"non-scored-harness:{boundary.isoformat()}"
+    record_worker_start_attempt(
+        pipeline,
+        now=manifest.activation_timestamp,
+        source_identity=attempt,
+    )
     establish_prospective_start(
         pipeline,
         manifest=manifest,
         now=manifest.activation_timestamp,
+        worker_attempt_identity=attempt,
     )
     result = run_phase2_boundary(pipeline, manifest=manifest, boundary=boundary)
     snapshot = inspect_case(case)
