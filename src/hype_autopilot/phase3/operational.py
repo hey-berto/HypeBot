@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from hype_autopilot.clock import next_quarter_hour
+from hype_autopilot.clock import ensure_utc, next_quarter_hour
 from hype_autopilot.hashing import sha256_canonical
 from hype_autopilot.phase2.storage import (
+    FRESH_START_ONLY_EPOCHS,
     INITIAL_EVIDENCE_WINDOW_RULE,
     OPERATIONAL_RESET_RULE,
 )
@@ -46,18 +47,54 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _missing_boundaries(values: list[datetime]) -> list[str]:
-    if len(values) < 2:
-        return []
-    observed = set(values)
+def _missing_boundaries(
+    values: list[datetime], *, evidence_start: datetime, observation_cutoff: datetime
+) -> list[str]:
+    observed = {ensure_utc(value) for value in values}
     missing: list[str] = []
-    cursor = min(values)
-    end = max(values)
-    while cursor <= end:
+    cursor = ensure_utc(evidence_start)
+    cutoff = ensure_utc(observation_cutoff)
+    while cursor <= cutoff:
         if cursor not in observed:
             missing.append(cursor.isoformat())
         cursor += timedelta(minutes=15)
     return missing
+
+
+def _startup_boundary_acceptance(
+    cycles: list[sqlite3.Row], *, evidence_start: datetime
+) -> dict[str, Any]:
+    required = [evidence_start + timedelta(minutes=15 * index) for index in range(4)]
+    rows = {ensure_utc(datetime.fromisoformat(row["scheduled_at"])): row for row in cycles}
+    results: list[dict[str, Any]] = []
+    accepted = True
+    for boundary in required:
+        row = rows.get(boundary)
+        details: dict[str, Any] = {}
+        if row is not None:
+            try:
+                details = json.loads(row["details_json"])
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+        passed = bool(
+            row is not None
+            and row["status"] == "COMPLETE"
+            and details.get("scoreable") is True
+        )
+        accepted = accepted and passed
+        results.append(
+            {
+                "scheduled_at": boundary.isoformat(),
+                "status": row["status"] if row is not None else "ABSENT",
+                "scoreable": details.get("scoreable") if row is not None else None,
+                "passed": passed,
+            }
+        )
+    return {
+        "accepted": accepted,
+        "required_boundaries": [value.isoformat() for value in required],
+        "results": results,
+    }
 
 
 def _supervisor_relaunches(path: str | Path | None, activation: datetime) -> int:
@@ -154,6 +191,10 @@ def _validated_evidence_window(
         return boundary, False
 
     if identity == ("POST_OPERATIONAL_FIX_PROSPECTIVE_RESET", OPERATIONAL_RESET_RULE):
+        if phase2_epoch_id in FRESH_START_ONLY_EPOCHS:
+            raise ValueError(
+                "fresh-start-only epoch cannot use an operational evidence-window reset"
+            )
         if row["prospective_start_integrity_hash"] is not None or not row["deployment_id"]:
             raise ValueError("operational-reset evidence-window identity is invalid")
         deployment = db.execute(
@@ -268,6 +309,7 @@ def collect_operational_telemetry(
     database_path: str | Path,
     *,
     supervisor_event_log: str | Path | None = None,
+    observation_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     """Read operational metadata only; never load returns, PnL, or trade outcomes."""
     db = _read_only_connection(database_path)
@@ -287,11 +329,12 @@ def collect_operational_telemetry(
         evidence_start, evidence_clock_reset_applied = _validated_evidence_window(
             db, phase2_epoch_id=manifest["phase2_epoch_id"]
         )
+        cutoff = ensure_utc(observation_cutoff or datetime.now(UTC))
         frozen = manifest["frozen_contract"]
         cycles = db.execute(
-            "SELECT scheduled_at, status FROM research_cycles "
-            "WHERE scheduled_at>=? ORDER BY scheduled_at",
-            (evidence_start.isoformat(),),
+            "SELECT scheduled_at,status,details_json FROM research_cycles "
+            "WHERE scheduled_at>=? AND scheduled_at<=? ORDER BY scheduled_at",
+            (evidence_start.isoformat(), cutoff.isoformat()),
         ).fetchall()
         boundaries = [
             datetime.fromisoformat(row["scheduled_at"]).astimezone(UTC)
@@ -333,6 +376,14 @@ def collect_operational_telemetry(
             "llm": "SELECT COUNT(*) FROM (SELECT input_snapshot_hash,strategy_version,COUNT(*) n FROM llm_decisions GROUP BY input_snapshot_hash,strategy_version HAVING n>1)",
             "attempts": "SELECT COUNT(*) FROM (SELECT input_snapshot_hash,attempt,COUNT(*) n FROM llm_invocation_attempts GROUP BY input_snapshot_hash,attempt HAVING n>1)",
         }
+        downtime_boundaries = []
+        for row in cycles:
+            try:
+                details = json.loads(row["details_json"])
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+            if row["status"] == "REJECTED" and details.get("reason") == "PROCESS_DOWNTIME":
+                downtime_boundaries.append(row["scheduled_at"])
         return {
             "telemetry_scope": "OPERATIONAL_ONLY_NO_PERFORMANCE_FIELDS",
             "activation_timestamp": activation.isoformat(),
@@ -340,9 +391,18 @@ def collect_operational_telemetry(
             "effective_evidence_start": evidence_start.isoformat(),
             "phase3_calendar_floor_anchor": evidence_start.isoformat(),
             "evidence_clock_reset_applied": evidence_clock_reset_applied,
+            "observation_cutoff": cutoff.isoformat(),
             "latest_boundary": max(boundaries).isoformat() if boundaries else None,
             "cycle_status_counts": dict(Counter(row["status"] for row in cycles)),
-            "missing_boundaries": _missing_boundaries(boundaries),
+            "missing_boundaries": _missing_boundaries(
+                boundaries,
+                evidence_start=evidence_start,
+                observation_cutoff=cutoff,
+            ),
+            "rejected_process_downtime_boundaries": downtime_boundaries,
+            "first_four_boundary_acceptance": _startup_boundary_acceptance(
+                cycles, evidence_start=evidence_start
+            ),
             "collection_gaps": {"total": gaps["total"], "open": gaps["open"] or 0},
             "duplicates": {
                 key: db.execute(query).fetchone()[0]

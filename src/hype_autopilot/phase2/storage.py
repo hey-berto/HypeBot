@@ -167,6 +167,7 @@ AND (
 
 INITIAL_EVIDENCE_WINDOW_RULE = "FIRST_QUARTER_HOUR_STRICTLY_AFTER_WORKER_START_V1"
 OPERATIONAL_RESET_RULE = "OPERATIONAL_RESET_V1"
+FRESH_START_ONLY_EPOCHS = frozenset({"phase2_epoch_005"})
 
 
 def phase2_database_schema_hash() -> str:
@@ -571,6 +572,10 @@ class Phase2Repository:
         first_eligible_boundary: datetime,
         deployment_id: str,
     ) -> None:
+        if phase2_epoch_id in FRESH_START_ONLY_EPOCHS:
+            raise ValueError(
+                "fresh-start-only epoch cannot use an operational evidence-window reset"
+            )
         boundary = first_eligible_boundary.astimezone(UTC)
         if boundary.minute % 15 or boundary.second or boundary.microsecond:
             raise ValueError("Phase 2 evidence window must start on a UTC quarter-hour")
