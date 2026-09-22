@@ -277,7 +277,7 @@ def test_unit_pins_epoch005():
     assert "phase2_epoch_004" not in service + health
     assert "phase2-epoch-004" not in service + health
     assert "phase2_epoch_005" in service + health
-    assert "41b53508f123b916e18d374cda5258ce6856ad58" in service
+    assert "8d2f46b8e2666c5e04871def602f941156fbbe7d" in service
     assert "2118bb72f73495a190eb7550408c260de44da84153868da96f94f886b7030b12" in service
     assert "97318c27b3765780916efe010c3653fa8f8b097bdddd20ef711d40f41a5a1be4" in service
     assert "62b5f58020cbaf19338fbfcf8e81c6b4a8f66cc67b635d2fe622e8f6d286586a" in service
