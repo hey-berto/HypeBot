@@ -10,6 +10,7 @@ import pytest
 from hype_autopilot.hashing import canonical_json, sha256_canonical
 from hype_autopilot.phase2.storage import (
     INITIAL_EVIDENCE_WINDOW_RULE,
+    OPERATIONAL_RESET_RULE,
     Phase2Repository,
 )
 from hype_autopilot.phase3.gate import (
@@ -237,7 +238,9 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     db.commit()
     db.close()
     before = database.read_bytes()
-    report = collect_operational_telemetry(database)
+    report = collect_operational_telemetry(
+        database, observation_cutoff=activation + timedelta(minutes=30)
+    )
     assert database.read_bytes() == before
     assert report["telemetry_scope"] == "OPERATIONAL_ONLY_NO_PERFORMANCE_FIELDS"
     assert report["database_integrity"] == "ok"
@@ -293,7 +296,9 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     )
     db.commit()
     db.close()
-    after_failure = collect_operational_telemetry(database)
+    after_failure = collect_operational_telemetry(
+        database, observation_cutoff=activation + timedelta(minutes=60)
+    )
     assert after_failure["effective_evidence_start"] == evidence_start.isoformat()
     assert after_failure["phase3_calendar_floor_anchor"] == evidence_start.isoformat()
 
@@ -510,6 +515,73 @@ def test_genuine_operational_reset_preserves_reset_reporting(tmp_path):
     repository.initialize()
     activation = datetime(2026, 9, 22, 3, 45, tzinfo=UTC)
     manifest = {
+        "phase2_epoch_id": "phase2_epoch_002",
+        "frozen_contract": {
+            "model": "gpt-5.6-terra",
+            "model_version": "gpt-5.6-terra",
+            "resource_isolation": {"api_budget_usd_per_day": 10.0},
+        },
+    }
+    db.execute(
+        "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "m",
+            "phase2_epoch_002",
+            "phase2_epoch_002",
+            activation.isoformat(),
+            "g",
+            "c",
+            "p",
+            "o",
+            "mh",
+            "d",
+            json.dumps(manifest),
+        ),
+    )
+    reset_at = activation + timedelta(minutes=30)
+    repository.record_operational_deployment(
+        deployment_id="reset-v1",
+        phase2_epoch_id="phase2_epoch_002",
+        base_manifest_hash="mh",
+        source_commit="a" * 40,
+        database_schema_hash="b" * 64,
+        deployed_at=reset_at,
+    )
+    repository.set_evidence_window_start(
+        window_id="reset-window-v1",
+        phase2_epoch_id="phase2_epoch_002",
+        first_eligible_boundary=reset_at,
+        deployment_id="reset-v1",
+    )
+    db.close()
+    report = collect_operational_telemetry(database, observation_cutoff=reset_at)
+    assert report["effective_evidence_start"] == reset_at.isoformat()
+    assert report["evidence_clock_reset_applied"] is True
+
+
+def test_epoch005_writer_rejects_operational_evidence_window_reset(tmp_path):
+    database, start = _valid_epoch005_window_database(tmp_path)
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    with pytest.raises(ValueError, match="fresh-start-only"):
+        repository.set_evidence_window_start(
+            window_id="forbidden-reset",
+            phase2_epoch_id="phase2_epoch_005",
+            first_eligible_boundary=start + timedelta(minutes=15),
+            deployment_id="unused",
+        )
+    db.close()
+
+
+def test_epoch005_consumer_rejects_structurally_valid_operational_reset(tmp_path):
+    database = tmp_path / "forbidden-epoch005-reset.sqlite3"
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    repository.initialize()
+    activation = datetime(2026, 9, 22, 3, 45, tzinfo=UTC)
+    manifest = {
         "phase2_epoch_id": "phase2_epoch_005",
         "frozen_contract": {
             "model": "gpt-5.6-terra",
@@ -533,22 +605,151 @@ def test_genuine_operational_reset_preserves_reset_reporting(tmp_path):
             json.dumps(manifest),
         ),
     )
-    reset_at = activation + timedelta(minutes=30)
     repository.record_operational_deployment(
-        deployment_id="reset-v1",
+        deployment_id="forbidden-reset-v1",
         phase2_epoch_id="phase2_epoch_005",
         base_manifest_hash="mh",
         source_commit="a" * 40,
         database_schema_hash="b" * 64,
-        deployed_at=reset_at,
+        deployed_at=activation,
     )
-    repository.set_evidence_window_start(
-        window_id="reset-window-v1",
-        phase2_epoch_id="phase2_epoch_005",
-        first_eligible_boundary=reset_at,
-        deployment_id="reset-v1",
+    body = {
+        "window_id": "forbidden-window-v1",
+        "phase2_epoch_id": "phase2_epoch_005",
+        "first_eligible_boundary": activation.isoformat(),
+        "deployment_id": "forbidden-reset-v1",
+        "prospective_start_integrity_hash": None,
+        "established_at": activation.isoformat(),
+        "rule_version": OPERATIONAL_RESET_RULE,
+        "reason_code": "POST_OPERATIONAL_FIX_PROSPECTIVE_RESET",
+    }
+    db.execute(
+        "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            body["window_id"],
+            body["phase2_epoch_id"],
+            body["first_eligible_boundary"],
+            body["deployment_id"],
+            body["prospective_start_integrity_hash"],
+            body["established_at"],
+            body["rule_version"],
+            body["reason_code"],
+            canonical_json(body),
+            sha256_canonical(body),
+        ),
     )
+    db.commit()
     db.close()
-    report = collect_operational_telemetry(database)
-    assert report["effective_evidence_start"] == reset_at.isoformat()
-    assert report["evidence_clock_reset_applied"] is True
+    with pytest.raises(ValueError, match="fresh-start-only"):
+        collect_operational_telemetry(database, observation_cutoff=activation)
+
+
+def _insert_operational_cycle(
+    database: Path,
+    *,
+    scheduled_at: datetime,
+    status: str = "COMPLETE",
+    scoreable: bool = True,
+    reason: str | None = None,
+) -> None:
+    details = {"scoreable": scoreable}
+    if reason is not None:
+        details["reason"] = reason
+    db = sqlite3.connect(database)
+    db.execute(
+        "INSERT INTO research_cycles"
+        "(cycle_id,scheduled_at,observation_class,started_at,status,details_json) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            f"cycle-{scheduled_at.isoformat()}",
+            scheduled_at.isoformat(),
+            "SCORED_PROSPECTIVE",
+            scheduled_at.isoformat(),
+            status,
+            json.dumps(details),
+        ),
+    )
+    db.commit()
+    db.close()
+
+
+def test_missing_first_boundary_is_not_hidden_by_four_later_successes(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    for offset in range(1, 5):
+        _insert_operational_cycle(
+            database, scheduled_at=first + timedelta(minutes=15 * offset)
+        )
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=60)
+    )
+    assert report["missing_boundaries"] == [first.isoformat()]
+    assert report["first_four_boundary_acceptance"]["accepted"] is False
+    assert report["first_four_boundary_acceptance"]["results"][0]["status"] == "ABSENT"
+
+
+def test_no_cycles_after_window_reports_each_due_boundary_missing(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=15)
+    )
+    assert report["missing_boundaries"] == [
+        first.isoformat(),
+        (first + timedelta(minutes=15)).isoformat(),
+    ]
+
+
+def test_internal_absent_boundary_is_reported(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    _insert_operational_cycle(database, scheduled_at=first)
+    _insert_operational_cycle(database, scheduled_at=first + timedelta(minutes=30))
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=30)
+    )
+    assert report["missing_boundaries"] == [
+        (first + timedelta(minutes=15)).isoformat()
+    ]
+
+
+def test_rejected_downtime_boundary_is_present_but_not_successful(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    _insert_operational_cycle(
+        database,
+        scheduled_at=first,
+        status="REJECTED",
+        scoreable=False,
+        reason="PROCESS_DOWNTIME",
+    )
+    report = collect_operational_telemetry(database, observation_cutoff=first)
+    assert report["missing_boundaries"] == []
+    assert report["rejected_process_downtime_boundaries"] == [first.isoformat()]
+    assert report["first_four_boundary_acceptance"]["accepted"] is False
+
+
+def test_boundary_not_yet_scheduled_is_not_reported_missing(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    report = collect_operational_telemetry(
+        database,
+        observation_cutoff=datetime(2026, 9, 22, 4, 44, 59, tzinfo=UTC),
+    )
+    assert report["missing_boundaries"] == []
+
+
+def test_first_four_acceptance_requires_exact_initial_boundaries(tmp_path):
+    database, _ = _valid_epoch005_window_database(tmp_path)
+    first = datetime(2026, 9, 22, 4, 45, tzinfo=UTC)
+    for offset in range(4):
+        _insert_operational_cycle(
+            database, scheduled_at=first + timedelta(minutes=15 * offset)
+        )
+    report = collect_operational_telemetry(
+        database, observation_cutoff=first + timedelta(minutes=45)
+    )
+    assert report["missing_boundaries"] == []
+    assert report["first_four_boundary_acceptance"]["accepted"] is True
+    assert report["first_four_boundary_acceptance"]["required_boundaries"] == [
+        (first + timedelta(minutes=15 * offset)).isoformat() for offset in range(4)
+    ]
