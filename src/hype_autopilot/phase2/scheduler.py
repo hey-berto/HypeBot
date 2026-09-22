@@ -13,6 +13,7 @@ from hype_autopilot.data.models import ObservationClass
 from hype_autopilot.hashing import sha256_canonical
 from hype_autopilot.phase2.manifest import Phase2Manifest
 from hype_autopilot.phase2.pipeline import Phase2Pipeline
+from hype_autopilot.phase2.storage import INITIAL_EVIDENCE_WINDOW_RULE
 
 
 class FatalPhase2OperationalError(RuntimeError):
@@ -26,6 +27,20 @@ class DowntimeAccountingSummary:
 
 
 PROSPECTIVE_START_EVENT = "PROSPECTIVE_START_ESTABLISHED"
+WORKER_START_ATTEMPT_EVENT = "WORKER_START_ATTEMPT"
+
+
+def record_worker_start_attempt(
+    pipeline: Phase2Pipeline, *, now: datetime, source_identity: str
+) -> str:
+    """Persist the current process attempt before data-readiness can fail."""
+    return pipeline.repository.record_recovery_event(
+        phase2_epoch_id=pipeline.config.phase2_epoch_id,
+        event_type=WORKER_START_ATTEMPT_EVENT,
+        source_identity=source_identity,
+        payload={"worker_started_at": ensure_utc(now).isoformat()},
+        occurred_at=ensure_utc(now),
+    )
 
 
 def prospective_start(pipeline: Phase2Pipeline) -> datetime | None:
@@ -57,19 +72,73 @@ def prospective_start(pipeline: Phase2Pipeline) -> datetime | None:
     return ensure_utc(datetime.fromisoformat(row["occurred_at"]))
 
 
+def evidence_window_start(pipeline: Phase2Pipeline) -> datetime | None:
+    rows = pipeline.repository.db.execute(
+        "SELECT first_eligible_boundary,prospective_start_integrity_hash,"
+        "established_at,rule_version,reason_code,payload_json,integrity_hash "
+        "FROM phase2_evidence_windows WHERE phase2_epoch_id=?",
+        (pipeline.config.phase2_epoch_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise FatalPhase2OperationalError("ambiguous evidence-window start")
+    start = prospective_start(pipeline)
+    if start is None:
+        raise FatalPhase2OperationalError("evidence window exists without start anchor")
+    anchor = pipeline.repository.db.execute(
+        "SELECT integrity_hash FROM phase2_recovery_events "
+        "WHERE phase2_epoch_id=? AND event_type=? AND source_identity=?",
+        (
+            pipeline.config.phase2_epoch_id,
+            PROSPECTIVE_START_EVENT,
+            pipeline.config.phase2_epoch_id,
+        ),
+    ).fetchone()
+    row = rows[0]
+    body = json.loads(row["payload_json"])
+    boundary = ensure_utc(datetime.fromisoformat(row["first_eligible_boundary"]))
+    if (
+        sha256_canonical(body) != row["integrity_hash"]
+        or anchor is None
+        or row["prospective_start_integrity_hash"] != anchor["integrity_hash"]
+        or row["established_at"] != start.isoformat()
+        or row["rule_version"] != INITIAL_EVIDENCE_WINDOW_RULE
+        or row["reason_code"] != "INITIAL_PROSPECTIVE_START"
+        or boundary != planned_phase2_boundary(start)
+    ):
+        raise FatalPhase2OperationalError("invalid immutable evidence window")
+    return boundary
+
+
 def establish_prospective_start(
-    pipeline: Phase2Pipeline, *, manifest: Phase2Manifest, now: datetime
+    pipeline: Phase2Pipeline,
+    *,
+    manifest: Phase2Manifest,
+    now: datetime,
+    worker_attempt_identity: str,
 ) -> tuple[datetime, bool]:
-    """Persist one start after readiness; a restart reuses it unchanged."""
+    """Atomically persist one start and its immutable first eligible boundary."""
     now = ensure_utc(now)
     existing = prospective_start(pipeline)
     if existing is not None:
         if existing < manifest.activation_timestamp.astimezone(UTC):
             raise FatalPhase2OperationalError("start predates authorization manifest")
+        if evidence_window_start(pipeline) != planned_phase2_boundary(existing):
+            raise FatalPhase2OperationalError("evidence window/start mismatch")
         return existing, False
     if now < manifest.activation_timestamp.astimezone(UTC):
         raise FatalPhase2OperationalError(
             "worker clock predates authorization manifest"
+        )
+    attempts = pipeline.repository.db.execute(
+        "SELECT source_identity FROM phase2_recovery_events "
+        "WHERE phase2_epoch_id=? AND event_type=? ORDER BY occurred_at",
+        (pipeline.config.phase2_epoch_id, WORKER_START_ATTEMPT_EVENT),
+    ).fetchall()
+    if len(attempts) != 1 or attempts[0]["source_identity"] != worker_attempt_identity:
+        raise FatalPhase2OperationalError(
+            "activation attempt is ambiguous or follows a failed pre-window start"
         )
     for table in (
         "research_cycles",
@@ -79,21 +148,52 @@ def establish_prospective_start(
         "strategy_decisions",
         "detector_decisions",
         "paper_trades",
-        "phase2_recovery_events",
     ):
         if pipeline.repository.db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
             raise FatalPhase2OperationalError(
                 "existing evidence without a prospective-start anchor"
             )
-    pipeline.repository.record_recovery_event(
-        phase2_epoch_id=pipeline.config.phase2_epoch_id,
-        event_type=PROSPECTIVE_START_EVENT,
-        source_identity=pipeline.config.phase2_epoch_id,
-        payload={"prospective_start": now.isoformat()},
-        occurred_at=now,
-    )
+    unexpected = pipeline.repository.db.execute(
+        "SELECT 1 FROM phase2_recovery_events WHERE phase2_epoch_id=? "
+        "AND NOT (event_type=? AND source_identity=?) LIMIT 1",
+        (
+            pipeline.config.phase2_epoch_id,
+            WORKER_START_ATTEMPT_EVENT,
+            worker_attempt_identity,
+        ),
+    ).fetchone()
+    if unexpected is not None:
+        raise FatalPhase2OperationalError(
+            "existing recovery evidence without a prospective-start anchor"
+        )
+    with pipeline.repository.atomic():
+        pipeline.repository.record_recovery_event(
+            phase2_epoch_id=pipeline.config.phase2_epoch_id,
+            event_type=PROSPECTIVE_START_EVENT,
+            source_identity=pipeline.config.phase2_epoch_id,
+            payload={"prospective_start": now.isoformat()},
+            occurred_at=now,
+        )
+        anchor = pipeline.repository.db.execute(
+            "SELECT integrity_hash FROM phase2_recovery_events "
+            "WHERE phase2_epoch_id=? AND event_type=? AND source_identity=?",
+            (
+                pipeline.config.phase2_epoch_id,
+                PROSPECTIVE_START_EVENT,
+                pipeline.config.phase2_epoch_id,
+            ),
+        ).fetchone()
+        if anchor is None:
+            raise FatalPhase2OperationalError("prospective-start anchor is absent")
+        pipeline.repository.establish_initial_evidence_window(
+            phase2_epoch_id=pipeline.config.phase2_epoch_id,
+            prospective_start=now,
+            prospective_start_integrity_hash=anchor["integrity_hash"],
+        )
     if prospective_start(pipeline) != now:
         raise FatalPhase2OperationalError("prospective-start persistence mismatch")
+    if evidence_window_start(pipeline) != planned_phase2_boundary(now):
+        raise FatalPhase2OperationalError("evidence-window persistence mismatch")
     return now, True
 
 
@@ -111,6 +211,7 @@ def account_for_process_downtime(
     *,
     manifest: Phase2Manifest,
     now: datetime,
+    worker_attempt_identity: str,
 ) -> DowntimeAccountingSummary:
     """Persist audit-only rows for elapsed boundaries missed while fully offline.
 
@@ -119,10 +220,17 @@ def account_for_process_downtime(
     """
     pipeline.assert_active_manifest(manifest)
     now = now.astimezone(UTC)
-    start, created = establish_prospective_start(pipeline, manifest=manifest, now=now)
+    _start, created = establish_prospective_start(
+        pipeline,
+        manifest=manifest,
+        now=now,
+        worker_attempt_identity=worker_attempt_identity,
+    )
     if created:
         return DowntimeAccountingSummary()
-    first_boundary = planned_phase2_boundary(start)
+    first_boundary = evidence_window_start(pipeline)
+    if first_boundary is None:
+        raise FatalPhase2OperationalError("evidence window is not established")
     latest = pipeline.repository.core.latest_cycle_time(
         ObservationClass.SCORED_PROSPECTIVE.value
     )
@@ -231,7 +339,8 @@ def run_phase2_boundary(
 ) -> str:
     """Run one idempotent boundary and contain all operational failures."""
     start = prospective_start(pipeline)
-    if start is None or boundary.astimezone(UTC) < planned_phase2_boundary(start):
+    window = evidence_window_start(pipeline)
+    if start is None or window is None or boundary.astimezone(UTC) < window:
         raise FatalPhase2OperationalError(
             "boundary predates the immutable prospective start"
         )
@@ -286,6 +395,7 @@ async def schedule_phase2_forever(
     pipeline: Phase2Pipeline,
     *,
     manifest: Phase2Manifest,
+    worker_attempt_identity: str,
     stop: threading.Event | None = None,
     grace_seconds: int = 5,
     clock: Callable[[], datetime] | None = None,
@@ -295,7 +405,12 @@ async def schedule_phase2_forever(
     startup_boundary = next_quarter_hour(clock().astimezone(UTC))
     try:
         pipeline.assert_active_manifest(manifest)
-        account_for_process_downtime(pipeline, manifest=manifest, now=clock())
+        account_for_process_downtime(
+            pipeline,
+            manifest=manifest,
+            now=clock(),
+            worker_attempt_identity=worker_attempt_identity,
+        )
     except FatalPhase2OperationalError:
         raise
     except Exception as exc:  # noqa: BLE001 - startup integrity failures are fatal

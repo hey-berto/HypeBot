@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from hype_autopilot.hashing import sha256_canonical
+
 PAIR_STRATEGIES = {
     "LLM_V1__vs__QUANT_TREND_V1": ("LLM_V1", "QUANT_TREND"),
     "LLM_V1__vs__QUANT_MR_V1": ("LLM_V1", "QUANT_MR"),
@@ -160,18 +162,26 @@ def collect_operational_telemetry(
         activation = datetime.fromisoformat(
             manifest_row["activation_timestamp"]
         ).astimezone(UTC)
-        evidence_start = activation
-        if _table_exists(db, "phase2_evidence_windows"):
-            row = db.execute(
-                "SELECT first_eligible_boundary FROM phase2_evidence_windows "
-                "WHERE phase2_epoch_id=? "
-                "ORDER BY first_eligible_boundary DESC LIMIT 1",
-                (manifest["phase2_epoch_id"],),
-            ).fetchone()
-            if row is not None:
-                evidence_start = datetime.fromisoformat(
-                    row["first_eligible_boundary"]
-                ).astimezone(UTC)
+        if not _table_exists(db, "phase2_evidence_windows"):
+            raise ValueError("immutable Phase 2 evidence window is required")
+        windows = db.execute(
+            "SELECT first_eligible_boundary,payload_json,integrity_hash "
+            "FROM phase2_evidence_windows WHERE phase2_epoch_id=?",
+            (manifest["phase2_epoch_id"],),
+        ).fetchall()
+        if len(windows) != 1:
+            raise ValueError("exactly one immutable Phase 2 evidence window is required")
+        window_payload = json.loads(windows[0]["payload_json"])
+        if (
+            sha256_canonical(window_payload) != windows[0]["integrity_hash"]
+            or window_payload.get("phase2_epoch_id") != manifest["phase2_epoch_id"]
+            or window_payload.get("first_eligible_boundary")
+            != windows[0]["first_eligible_boundary"]
+        ):
+            raise ValueError("Phase 2 evidence-window integrity validation failed")
+        evidence_start = datetime.fromisoformat(
+            windows[0]["first_eligible_boundary"]
+        ).astimezone(UTC)
         frozen = manifest["frozen_contract"]
         cycles = db.execute(
             "SELECT scheduled_at, status FROM research_cycles "
@@ -221,7 +231,7 @@ def collect_operational_telemetry(
         return {
             "telemetry_scope": "OPERATIONAL_ONLY_NO_PERFORMANCE_FIELDS",
             "activation_timestamp": activation.isoformat(),
-            "research_activation_timestamp": activation.isoformat(),
+            "research_activation_timestamp": evidence_start.isoformat(),
             "effective_evidence_start": evidence_start.isoformat(),
             "phase3_calendar_floor_anchor": evidence_start.isoformat(),
             "evidence_clock_reset_applied": evidence_start != activation,

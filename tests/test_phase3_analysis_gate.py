@@ -163,6 +163,23 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
             json.dumps(manifest),
         ),
     )
+    start = activation + timedelta(seconds=1)
+    repository.record_recovery_event(
+        phase2_epoch_id="phase2_epoch_002",
+        event_type="PROSPECTIVE_START_ESTABLISHED",
+        source_identity="phase2_epoch_002",
+        payload={"prospective_start": start.isoformat()},
+        occurred_at=start,
+    )
+    anchor_hash = db.execute(
+        "SELECT integrity_hash FROM phase2_recovery_events "
+        "WHERE event_type='PROSPECTIVE_START_ESTABLISHED'"
+    ).fetchone()[0]
+    repository.establish_initial_evidence_window(
+        phase2_epoch_id="phase2_epoch_002",
+        prospective_start=start,
+        prospective_start_integrity_hash=anchor_hash,
+    )
     for index, status in enumerate(("COMPLETE", "COMPLETE")):
         at = activation + timedelta(minutes=15 * (index + 1))
         db.execute(
@@ -249,44 +266,67 @@ def test_operational_telemetry_is_read_only_and_contains_no_performance(tmp_path
     forbidden = {"pnl", "return", "expectancy", "profit", "sharpe"}
     assert not any(word in json.dumps(report).lower() for word in forbidden)
 
-    reset = activation + timedelta(minutes=30)
+    evidence_start = activation + timedelta(minutes=15)
+    assert report["research_activation_timestamp"] == evidence_start.isoformat()
+    assert report["effective_evidence_start"] == evidence_start.isoformat()
+    assert report["phase3_calendar_floor_anchor"] == evidence_start.isoformat()
+    assert report["evidence_clock_reset_applied"] is True
+
+    # A later failure cannot move the already-established clock.
     db = sqlite3.connect(database)
     db.execute("PRAGMA foreign_keys=ON")
     db.execute(
-        "INSERT INTO phase2_outcome_exclusions VALUES (?,?,?,?,?,?,?,?)",
-        ("x0", "t0", "phase2_epoch_002", reset.isoformat(), "TEST", "fixture", "{}", "xi"),
-    )
-    db.execute(
-        "INSERT INTO phase2_operational_deployments VALUES (?,?,?,?,?,?,?,?,?)",
-        ("dep2", "phase2_epoch_002", "mh", "g", "d", "OPERATIONAL_ONLY", reset.isoformat(), "{}", "di2"),
-    )
-    db.execute(
-        "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?)",
-        ("w2", "phase2_epoch_002", reset.isoformat(), "dep2", "TEST", "{}", "wi2"),
-    )
-    # A globally newer window from another epoch must never move epoch_002's clock.
-    other = reset + timedelta(days=3)
-    db.execute(
-        "INSERT INTO phase2_operational_deployments VALUES (?,?,?,?,?,?,?,?,?)",
-        ("dep3", "phase2_epoch_003", "mh", "g", "d", "OPERATIONAL_ONLY", other.isoformat(), "{}", "di3"),
-    )
-    db.execute(
-        "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?)",
-        ("w3", "phase2_epoch_003", other.isoformat(), "dep3", "TEST", "{}", "wi3"),
+        "INSERT INTO research_cycles(cycle_id,scheduled_at,observation_class,started_at,status,details_json) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            "later-failure",
+            (activation + timedelta(minutes=60)).isoformat(),
+            "SCORED_PROSPECTIVE",
+            (activation + timedelta(minutes=60)).isoformat(),
+            "REJECTED",
+            "{}",
+        ),
     )
     db.commit()
     db.close()
-    reset_report = collect_operational_telemetry(database)
-    assert reset_report["research_activation_timestamp"] == activation.isoformat()
-    assert reset_report["effective_evidence_start"] == reset.isoformat()
-    assert reset_report["phase3_calendar_floor_anchor"] == reset.isoformat()
-    assert reset_report["evidence_clock_reset_applied"] is True
-    reset_rate = reset_report["coeligibility_rate_by_comparison"][
-        "LLM_V1__vs__QUANT_TREND_V1"
-    ]["daily"][0]
-    assert reset_rate == {
-        "day": "2026-09-04",
-        "boundaries": 2,
-        "coeligible": 2,
-        "rate": 1.0,
+    after_failure = collect_operational_telemetry(database)
+    assert after_failure["effective_evidence_start"] == evidence_start.isoformat()
+    assert after_failure["phase3_calendar_floor_anchor"] == evidence_start.isoformat()
+
+
+def test_operational_telemetry_rejects_manifest_time_fallback(tmp_path):
+    database = tmp_path / "missing-window.sqlite3"
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    repository.initialize()
+    activation = datetime(2026, 9, 4, 3, 45, tzinfo=UTC)
+    manifest = {
+        "phase2_epoch_id": "phase2_epoch_005",
+        "frozen_contract": {
+            "model": "gpt-5.6-terra",
+            "model_version": "gpt-5.6-terra",
+            "resource_isolation": {"api_budget_usd_per_day": 10.0},
+        },
     }
+    db.execute(
+        "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "m",
+            "phase2_epoch_005",
+            "phase2_epoch_005",
+            activation.isoformat(),
+            "g",
+            "c",
+            "p",
+            "o",
+            "mh",
+            "d",
+            json.dumps(manifest),
+        ),
+    )
+    db.commit()
+    db.close()
+
+    with pytest.raises(ValueError, match="exactly one immutable"):
+        collect_operational_telemetry(database)

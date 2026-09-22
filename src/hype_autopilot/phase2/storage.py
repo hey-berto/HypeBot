@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from hype_autopilot.clock import next_quarter_hour
 from hype_autopilot.data.repository import Repository
 from hype_autopilot.hashing import canonical_json, sha256_canonical
 from hype_autopilot.phase2.manifest import Phase2Manifest
@@ -73,11 +74,27 @@ CREATE TABLE IF NOT EXISTS phase2_operational_deployments (
 );
 CREATE TABLE IF NOT EXISTS phase2_evidence_windows (
   window_id TEXT PRIMARY KEY, phase2_epoch_id TEXT NOT NULL,
-  first_eligible_boundary TEXT NOT NULL, deployment_id TEXT NOT NULL
+  first_eligible_boundary TEXT NOT NULL, deployment_id TEXT
     REFERENCES phase2_operational_deployments(deployment_id),
-  reason_code TEXT NOT NULL, payload_json TEXT NOT NULL,
+  prospective_start_integrity_hash TEXT
+    REFERENCES phase2_recovery_events(integrity_hash),
+  established_at TEXT NOT NULL, rule_version TEXT NOT NULL,
+  reason_code TEXT NOT NULL CHECK(reason_code IN (
+    'INITIAL_PROSPECTIVE_START', 'POST_OPERATIONAL_FIX_PROSPECTIVE_RESET'
+  )), payload_json TEXT NOT NULL,
   integrity_hash TEXT NOT NULL UNIQUE,
-  UNIQUE(phase2_epoch_id, first_eligible_boundary)
+  UNIQUE(phase2_epoch_id),
+  CHECK (
+    (reason_code='INITIAL_PROSPECTIVE_START'
+      AND deployment_id IS NULL
+      AND prospective_start_integrity_hash IS NOT NULL
+      AND rule_version='FIRST_QUARTER_HOUR_STRICTLY_AFTER_WORKER_START_V1')
+    OR
+    (reason_code='POST_OPERATIONAL_FIX_PROSPECTIVE_RESET'
+      AND deployment_id IS NOT NULL
+      AND prospective_start_integrity_hash IS NULL
+      AND rule_version='OPERATIONAL_RESET_V1')
+  )
 );
 CREATE TRIGGER IF NOT EXISTS immutable_phase2_manifests_update BEFORE UPDATE ON phase2_manifests
 BEGIN SELECT RAISE(ABORT, 'phase2 manifests are immutable'); END;
@@ -119,12 +136,12 @@ WHERE NOT EXISTS (
   WHERE x.paper_trade_id=t.paper_trade_id
 )
 AND (
-  NOT EXISTS (
+  EXISTS (
     SELECT 1 FROM phase2_evidence_windows w
     WHERE w.phase2_epoch_id=s.epoch_id
   )
-  OR t.signal_time >= (
-    SELECT MAX(w.first_eligible_boundary) FROM phase2_evidence_windows w
+  AND t.signal_time >= (
+    SELECT w.first_eligible_boundary FROM phase2_evidence_windows w
     WHERE w.phase2_epoch_id=s.epoch_id
   )
 );
@@ -137,16 +154,19 @@ WHERE NOT EXISTS (
   WHERE t.snapshot_hash=p.input_snapshot_hash
 )
 AND (
-  NOT EXISTS (
+  EXISTS (
     SELECT 1 FROM phase2_evidence_windows w
     WHERE w.phase2_epoch_id=s.epoch_id
   )
-  OR s.snapshot_timestamp >= (
-    SELECT MAX(w.first_eligible_boundary) FROM phase2_evidence_windows w
+  AND s.snapshot_timestamp >= (
+    SELECT w.first_eligible_boundary FROM phase2_evidence_windows w
     WHERE w.phase2_epoch_id=s.epoch_id
   )
 );
 """
+
+INITIAL_EVIDENCE_WINDOW_RULE = "FIRST_QUARTER_HOUR_STRICTLY_AFTER_WORKER_START_V1"
+OPERATIONAL_RESET_RULE = "OPERATIONAL_RESET_V1"
 
 
 def phase2_database_schema_hash() -> str:
@@ -554,22 +574,76 @@ class Phase2Repository:
         boundary = first_eligible_boundary.astimezone(UTC)
         if boundary.minute % 15 or boundary.second or boundary.microsecond:
             raise ValueError("Phase 2 evidence window must start on a UTC quarter-hour")
+        deployment = self.db.execute(
+            "SELECT deployed_at FROM phase2_operational_deployments "
+            "WHERE deployment_id=? AND phase2_epoch_id=?",
+            (deployment_id, phase2_epoch_id),
+        ).fetchone()
+        if deployment is None:
+            raise ValueError("evidence window deployment identity is invalid")
         body = {
             "window_id": window_id,
             "phase2_epoch_id": phase2_epoch_id,
             "first_eligible_boundary": boundary.isoformat(),
             "deployment_id": deployment_id,
+            "prospective_start_integrity_hash": None,
+            "established_at": str(deployment["deployed_at"]),
+            "rule_version": OPERATIONAL_RESET_RULE,
             "reason_code": "POST_OPERATIONAL_FIX_PROSPECTIVE_RESET",
         }
+        self._insert_evidence_window(body)
+
+    def establish_initial_evidence_window(
+        self,
+        *,
+        phase2_epoch_id: str,
+        prospective_start: datetime,
+        prospective_start_integrity_hash: str,
+    ) -> datetime:
+        start = prospective_start.astimezone(UTC)
+        boundary = next_quarter_hour(start)
+        if boundary <= start:
+            boundary += timedelta(minutes=15)
+        body = {
+            "window_id": str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"phase2-initial-evidence-window:{phase2_epoch_id}:{prospective_start_integrity_hash}",
+                )
+            ),
+            "phase2_epoch_id": phase2_epoch_id,
+            "first_eligible_boundary": boundary.isoformat(),
+            "deployment_id": None,
+            "prospective_start_integrity_hash": prospective_start_integrity_hash,
+            "established_at": start.isoformat(),
+            "rule_version": INITIAL_EVIDENCE_WINDOW_RULE,
+            "reason_code": "INITIAL_PROSPECTIVE_START",
+        }
+        self._insert_evidence_window(body)
+        return boundary
+
+    def _insert_evidence_window(self, body: dict[str, Any]) -> None:
+        existing = self.db.execute(
+            "SELECT payload_json FROM phase2_evidence_windows WHERE phase2_epoch_id=?",
+            (body["phase2_epoch_id"],),
+        ).fetchone()
+        payload = canonical_json(body)
+        if existing is not None:
+            if existing["payload_json"] != payload:
+                raise RuntimeError("immutable Phase 2 evidence window conflict")
+            return
         self.db.execute(
-            "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO phase2_evidence_windows VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
-                window_id,
-                phase2_epoch_id,
-                boundary.isoformat(),
-                deployment_id,
+                body["window_id"],
+                body["phase2_epoch_id"],
+                body["first_eligible_boundary"],
+                body["deployment_id"],
+                body["prospective_start_integrity_hash"],
+                body["established_at"],
+                body["rule_version"],
                 body["reason_code"],
-                canonical_json(body),
+                payload,
                 sha256_canonical(body),
             ),
         )

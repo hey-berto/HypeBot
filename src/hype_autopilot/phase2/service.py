@@ -19,7 +19,10 @@ from hype_autopilot.data.collectors import ResilientWebsocketCollector
 from hype_autopilot.phase2.config import ACTIVATION_PHRASE
 from hype_autopilot.phase2.manifest import Phase2Manifest
 from hype_autopilot.phase2.runtime import Phase2Runtime, build_phase2_runtime
-from hype_autopilot.phase2.scheduler import schedule_phase2_forever
+from hype_autopilot.phase2.scheduler import (
+    record_worker_start_attempt,
+    schedule_phase2_forever,
+)
 from hype_autopilot.phase2.supervision import (
     ExclusiveProcessLease,
     SingleWriterSupervisor,
@@ -221,6 +224,12 @@ def run_worker(args: argparse.Namespace) -> None:
         )
         manifest = _load_manifest(runtime, grant)
         _activate_runtime(runtime, manifest)
+        worker_attempt_identity = f"{worker_started_at.isoformat()}:{os.getpid()}"
+        record_worker_start_attempt(
+            runtime.pipeline,
+            now=worker_started_at,
+            source_identity=worker_attempt_identity,
+        )
         websocket = ResilientWebsocketCollector(
             runtime.repository.core, runtime.pipeline.collector
         )
@@ -241,6 +250,7 @@ def run_worker(args: argparse.Namespace) -> None:
             schedule_phase2_forever(
                 runtime.pipeline,
                 manifest=manifest,
+                worker_attempt_identity=worker_attempt_identity,
                 stop=stop,
             )
         )

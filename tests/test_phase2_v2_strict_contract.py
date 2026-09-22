@@ -248,6 +248,21 @@ def test_epoch004_is_inactive_and_matches_epoch003_except_identity() -> None:
     assert new_values == old_values
 
 
+def test_epoch005_is_inactive_and_matches_epoch004_except_identity() -> None:
+    old, _ = load_phase2_config(ROOT / "config/phase2/phase2_epoch_004.yaml")
+    new, digest = load_phase2_config(ROOT / "config/phase2/phase2_epoch_005.yaml")
+    assert new.phase2_epoch_id == "phase2_epoch_005"
+    assert new.database_path == "data/phase2/phase2_epoch_005.sqlite3"
+    assert digest == "2118bb72f73495a190eb7550408c260de44da84153868da96f94f886b7030b12"
+    new.assert_build_only()
+    old_values = old.model_dump()
+    new_values = new.model_dump()
+    for key in ("phase2_epoch_id", "database_path"):
+        old_values.pop(key)
+        new_values.pop(key)
+    assert new_values == old_values
+
+
 @pytest.mark.parametrize(
     ("base", "path", "value"),
     [
