@@ -559,7 +559,10 @@ def test_genuine_operational_reset_preserves_reset_reporting(tmp_path):
     assert report["evidence_clock_reset_applied"] is True
 
 
-def test_epoch005_writer_rejects_operational_evidence_window_reset(tmp_path):
+@pytest.mark.parametrize("epoch_id", ["phase2_epoch_005", "phase2_epoch_006"])
+def test_fresh_start_epoch_writer_rejects_operational_evidence_window_reset(
+    tmp_path, epoch_id
+):
     database, start = _valid_epoch005_window_database(tmp_path)
     db = sqlite3.connect(database)
     db.row_factory = sqlite3.Row
@@ -567,7 +570,7 @@ def test_epoch005_writer_rejects_operational_evidence_window_reset(tmp_path):
     with pytest.raises(ValueError, match="fresh-start-only"):
         repository.set_evidence_window_start(
             window_id="forbidden-reset",
-            phase2_epoch_id="phase2_epoch_005",
+            phase2_epoch_id=epoch_id,
             first_eligible_boundary=start + timedelta(minutes=15),
             deployment_id="unused",
         )
