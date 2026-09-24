@@ -229,6 +229,22 @@ def main() -> int:
             failures.append("evidence clock anchor/window invariant failed")
         prospective_snapshots = db.execute("SELECT * FROM decision_snapshots WHERE epoch_id=? AND observation_class='SCORED_PROSPECTIVE'", (EPOCH,)).fetchall()
         pre = [row for row in prospective_snapshots if instant(row["snapshot_timestamp"]) < instant(EXPECTED["first_boundary"])]
+        pre_details = []
+        for snapshot in pre:
+            cycle = db.execute(
+                "SELECT cycle_id,scheduled_at,status,created_at FROM research_cycles "
+                "WHERE snapshot_hash=?", (snapshot["snapshot_hash"],)
+            ).fetchone()
+            pre_details.append({
+                "snapshot_timestamp": snapshot["snapshot_timestamp"],
+                "snapshot_hash": snapshot["snapshot_hash"],
+                "observation_class": snapshot["observation_class"],
+                "scoreable": bool(snapshot["scoreable"]),
+                "created_at": snapshot["created_at"],
+                "cycle_id": cycle["cycle_id"] if cycle else None,
+                "scheduled_at": cycle["scheduled_at"] if cycle else None,
+                "cycle_status": cycle["status"] if cycle else None,
+            })
         if pre: failures.append(f"pre-boundary scored prospective snapshots observed: {len(pre)}")
         rows = [cycle_row(db, boundary, failures, attempts_telemetry) for boundary in BOUNDARIES]
     finally: db.close()
@@ -268,7 +284,7 @@ def main() -> int:
         else:
             guard_pass += 1
     status = "PHASE_2_EPOCH_006_FIRST4_CONCERN" if failures else "PHASE_2_EPOCH_006_FIRST4_VALIDATED"
-    print(json.dumps({"status": status, "validated_at": datetime.now(UTC).isoformat(), "identity": {"expected": {k:v for k,v in EXPECTED.items() if k in observed_identity}, "observed": observed_identity, "mismatches": identity_mismatches}, "runtime": {**runtime, "worker_processes": worker_processes}, "timer": {**timer, "health_successes": health_successes, "health_failures": health_failures}, "database": integrity, "evidence_clock": clock, "boundaries": rows, "provider": {"attempts": attempts_telemetry, "raw_response_hash_verification": "recomputed for every stored plaintext response", "information_boundary": "tool_calls_count == 0 and the recorded invocation metadata demonstrate absence of the currently instrumented external-tool leakage mechanism; this is not an exhaustive proof against every hypothetical leakage mechanism."}, "supervisor_event_starts": len(starts), "mullvad": {"pass_records": guard_pass, "actual_invocations": len(actual_attempts)}, "failures": failures}, sort_keys=True, indent=2))
+    print(json.dumps({"status": status, "validated_at": datetime.now(UTC).isoformat(), "identity": {"expected": {k:v for k,v in EXPECTED.items() if k in observed_identity}, "observed": observed_identity, "mismatches": identity_mismatches}, "runtime": {**runtime, "worker_processes": worker_processes}, "timer": {**timer, "health_successes": health_successes, "health_failures": health_failures}, "database": {**integrity, "pre_boundary_snapshots": pre_details}, "evidence_clock": clock, "boundaries": rows, "provider": {"attempts": attempts_telemetry, "raw_response_hash_verification": "recomputed for every stored plaintext response", "information_boundary": "tool_calls_count == 0 and the recorded invocation metadata demonstrate absence of the currently instrumented external-tool leakage mechanism; this is not an exhaustive proof against every hypothetical leakage mechanism."}, "supervisor_event_starts": len(starts), "mullvad": {"pass_records": guard_pass, "actual_invocations": len(actual_attempts)}, "failures": failures}, sort_keys=True, indent=2))
     return 0 if not failures else 2
 
 
