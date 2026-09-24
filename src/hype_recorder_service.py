@@ -5,7 +5,7 @@ import os
 import threading
 from datetime import UTC, datetime, timedelta
 
-from hype_autopilot.prospective_recorder import ProspectiveRecorder
+from hype_autopilot.prospective_recorder import BufferedIngestion, ProspectiveRecorder
 
 
 class HyperliquidRecorderService:
@@ -17,6 +17,7 @@ class HyperliquidRecorderService:
 
     def __init__(self, recorder: ProspectiveRecorder, info_factory) -> None:
         self.recorder, self.info_factory = recorder, info_factory
+        self.buffer = BufferedIngestion(recorder)
         self.session_id: str | None = None
         self.gaps: dict[str, str] = {}
 
@@ -49,14 +50,16 @@ class HyperliquidRecorderService:
             millis = item.get("time") if isinstance(item, dict) else None
             source = datetime.fromtimestamp(millis / 1000, UTC) if millis is not None else None
             source_key = str(item.get("tid") or item.get("hash") or item.get("time") or "")
-            self.recorder.ingest(session_id=self.session_id, stream=stream, payload=item, source_timestamp=source, source_key=source_key or None)
+            self.buffer.submit({"session_id": self.session_id, "stream": stream, "payload": item, "source_timestamp": source, "source_key": source_key or None})
+        self.buffer.drain()
 
     def poll_funding(self, info: object) -> None:
         assert self.session_id
         now = datetime.now(UTC)
         for row in info.funding_history("HYPE", int((now - timedelta(hours=2)).timestamp() * 1000), int(now.timestamp() * 1000)):
             source = datetime.fromtimestamp(row["time"] / 1000, UTC)
-            self.recorder.ingest(session_id=self.session_id, stream="funding", payload=row, source_timestamp=source, source_key=str(row["time"]))
+            self.buffer.submit({"session_id": self.session_id, "stream": "funding", "payload": row, "source_timestamp": source, "source_key": str(row["time"])})
+        self.buffer.drain()
 
 
 def main() -> None:

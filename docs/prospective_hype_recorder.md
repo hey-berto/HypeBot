@@ -69,3 +69,19 @@ lag/backlog, gaps, duplicates, out-of-order rows, and clock status. Execute one
 controlled disconnect/reconnect, process restart, and daily rotation/integrity
 check. `NATURAL_DISCONNECT_NOT_OBSERVED` is not a failure. Continue read-only
 monitoring to day 30 after a provisional pass.
+
+## Capacity and rotation
+
+The configured `QueueConfig` is immutable per process start (initial default:
+10,000 events; warning 70%; failure 90% or any overflow; sustained warning 60s).
+Overflow is recorded as health evidence and the producer receives an explicit
+non-durable result; it is never silent. Queue depth, maximum depth, warning
+duration, recovery duration, and p50/p95/p99/max enqueue-to-durable latency are
+reported. Set values in the separate-host launch configuration only after a
+measured pre-soak load test, not automatically.
+
+Daily sealing checkpoints WAL, copies a deterministic
+`hype-raw-YYYY-MM-DD.sqlite3` archive, checks integrity, and records SHA-256.
+Sealed archives are never deleted by recorder code. Operational resource
+telemetry reports DB/WAL bytes and stream staleness; host CPU, memory and I/O
+must be captured by systemd/cgroup or node exporter during soak.

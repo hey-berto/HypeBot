@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from hype_autopilot.prospective_recorder import CLASSIFICATION, ProspectiveRecorder
+from hype_autopilot.prospective_recorder import BufferedIngestion, CLASSIFICATION, ProspectiveRecorder, QueueConfig
 from hype_recorder_service import HyperliquidRecorderService
 
 
@@ -61,4 +61,21 @@ def test_adapter_restores_subscriptions_and_records_native_timestamps(tmp_path):
     row = recorder.db.execute("SELECT stream,source_timestamp,source_key FROM recorder_raw_events").fetchone()
     assert dict(row) == {"stream": "trades", "source_timestamp": "2023-11-14T22:13:20+00:00", "source_key": "7"}
     assert recorder.health()["open_gaps"] == 0
+    recorder.close()
+
+
+def test_bounded_queue_latency_recovery_and_archive_seal(tmp_path):
+    recorder = ProspectiveRecorder(tmp_path / "raw.sqlite3")
+    session = recorder.start_session()
+    buffer = BufferedIngestion(recorder, QueueConfig(capacity=2, warning_occupancy=.5, failure_occupancy=1.0, sustained_seconds=1))
+    item = {"session_id": session, "stream": "l2Book", "payload": {"time": 1}, "source_timestamp": None}
+    assert buffer.submit(item) == "QUEUED"
+    assert buffer.submit({**item, "payload": {"time": 2}}) == "QUEUED"
+    assert buffer.submit({**item, "payload": {"time": 3}}) == "OVERFLOW_RECORDED_NOT_DURABLE"
+    assert buffer.drain() == 2
+    health = buffer.health()
+    assert health["overflow_count"] == 1 and health["queue_depth"] == 0 and health["write_latency_seconds"]["l2Book"]["p95"] is not None
+    sealed = recorder.seal_archive(tmp_path / "sealed", "2026-01-01")
+    assert sealed["integrity"] == "ok" and len(sealed["sha256"]) == 64
+    assert recorder.health()["integrity_bearing"]["reconnect_count"] == 0
     recorder.close()

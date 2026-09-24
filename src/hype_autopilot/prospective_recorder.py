@@ -8,6 +8,9 @@ import sqlite3
 import time
 import os
 import subprocess
+import queue
+import shutil
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -146,4 +149,62 @@ class ProspectiveRecorder:
         rows = self.db.execute("SELECT stream,COUNT(*) n,MAX(received_at) last_received,SUM(out_of_order) out_of_order FROM recorder_raw_events GROUP BY stream").fetchall()
         duplicates = self.db.execute("SELECT COUNT(*) FROM recorder_connection_events WHERE event='DUPLICATE'").fetchone()[0]
         clock = self.db.execute("SELECT status FROM recorder_clock_health ORDER BY observation_id DESC LIMIT 1").fetchone()
-        return {"classification": CLASSIFICATION, "integrity": integrity, "open_gaps": open_gaps, "events": self.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0], "streams": {row["stream"]: {"events": row["n"], "last_received": row["last_received"], "out_of_order": row["out_of_order"]} for row in rows}, "duplicate_events": duplicates, "clock_health": clock["status"] if clock else "UNOBSERVED"}
+        now = _utc_now()
+        streams = {row["stream"]: {"events": row["n"], "last_received": row["last_received"], "out_of_order": row["out_of_order"], "staleness_seconds": (now - datetime.fromisoformat(row["last_received"])).total_seconds()} for row in rows}
+        bearing = {"integrity": integrity, "open_gaps": open_gaps, "duplicate_events": duplicates, "clock_health": clock["status"] if clock else "UNOBSERVED", "reconnect_count": self.db.execute("SELECT COUNT(*) FROM recorder_connection_events WHERE event='DISCONNECTED'").fetchone()[0]}
+        return {"classification": CLASSIFICATION, "integrity_bearing": bearing, **bearing, "capacity": {"db_bytes": self.database.stat().st_size if self.database.exists() else 0, "wal_bytes": (self.database.with_name(self.database.name + '-wal')).stat().st_size if self.database.with_name(self.database.name + '-wal').exists() else 0}, "events": self.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0], "streams": streams}
+
+    def seal_archive(self, archive_dir: str | Path, day: str) -> dict:
+        archive = Path(archive_dir) / f"hype-raw-{day}.sqlite3"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        target = sqlite3.connect(archive)
+        self.db.backup(target)
+        target.close()
+        integrity = sqlite3.connect(archive).execute("PRAGMA integrity_check").fetchone()[0]
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        return {"archive": str(archive), "integrity": integrity, "sha256": digest}
+
+
+@dataclass(frozen=True)
+class QueueConfig:
+    capacity: int = 10_000
+    warning_occupancy: float = 0.70
+    failure_occupancy: float = 0.90
+    sustained_seconds: float = 60.0
+
+
+class BufferedIngestion:
+    """Bounded producer/writer boundary; overflow is explicit, never silent."""
+    def __init__(self, recorder: ProspectiveRecorder, config: QueueConfig = QueueConfig()) -> None:
+        self.recorder, self.config = recorder, config
+        self.items: queue.Queue[dict] = queue.Queue(maxsize=config.capacity)
+        self.max_depth = self.overflow_count = 0
+        self.latencies: dict[str, list[float]] = {}
+        self.over_warning_since: float | None = None
+        self.recovery_seconds: list[float] = []
+
+    def submit(self, item: dict) -> str:
+        try: self.items.put_nowait({**item, "enqueued_ns": time.monotonic_ns()})
+        except queue.Full:
+            self.overflow_count += 1
+            self.recorder.connection_event(item["session_id"], "QUEUE_OVERFLOW", {"stream": item["stream"], "capacity": self.config.capacity})
+            return "OVERFLOW_RECORDED_NOT_DURABLE"
+        self.max_depth = max(self.max_depth, self.items.qsize())
+        if self.items.qsize() >= self.config.warning_occupancy * self.config.capacity and self.over_warning_since is None: self.over_warning_since = time.monotonic()
+        return "QUEUED"
+
+    def drain(self, limit: int | None = None) -> int:
+        count = 0
+        while not self.items.empty() and (limit is None or count < limit):
+            item = self.items.get_nowait(); enqueued = item.pop("enqueued_ns")
+            self.recorder.ingest(**item)
+            self.latencies.setdefault(item["stream"], []).append((time.monotonic_ns() - enqueued) / 1e9)
+            count += 1
+        if self.over_warning_since is not None and self.items.qsize() < self.config.warning_occupancy * self.config.capacity:
+            self.recovery_seconds.append(time.monotonic() - self.over_warning_since); self.over_warning_since = None
+        return count
+
+    def health(self) -> dict:
+        percentile = lambda v, p: sorted(v)[int((len(v)-1)*p)] if v else None
+        return {"queue_depth": self.items.qsize(), "max_queue_depth": self.max_depth, "overflow_count": self.overflow_count, "warning_sustained_seconds": (time.monotonic()-self.over_warning_since) if self.over_warning_since else 0.0, "recovery_seconds": self.recovery_seconds, "warning": self.items.qsize() >= self.config.warning_occupancy*self.config.capacity, "failure": self.items.qsize() >= self.config.failure_occupancy*self.config.capacity or self.overflow_count > 0, "write_latency_seconds": {s: {"count": len(v), "p50": percentile(v,.5), "p95": percentile(v,.95), "p99": percentile(v,.99), "max": max(v) if v else None} for s,v in self.latencies.items()}}
