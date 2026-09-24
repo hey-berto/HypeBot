@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from hype_autopilot.clock import ensure_utc, next_quarter_hour
 from hype_autopilot.hashing import sha256_canonical
@@ -29,6 +32,70 @@ PAIR_STRATEGIES = {
 }
 SCHEDULER_EXECUTION_GRACE = timedelta(seconds=5)
 BOUNDARY_COMPLETION_ALLOWANCE = timedelta(minutes=20)
+
+
+@dataclass(frozen=True)
+class Phase3OperationalBinding:
+    """Immutable, epoch-specific inputs for a read-only Phase 3 reader."""
+
+    binding_version: str
+    phase2_epoch_id: str
+    source_database: str
+    research_commit: str
+    operations_commit: str
+    prospective_anchor: datetime
+    first_eligible_boundary: datetime
+    calendar_floor: datetime
+    first_four_validation_status: str
+
+
+def _parse_utc_timestamp(value: object, *, field: str) -> datetime:
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
+def load_phase3_operational_binding(path: str | Path) -> Phase3OperationalBinding:
+    """Load the epoch006 binding without changing the Phase 3 evaluator."""
+    payload = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Phase 3 operational binding must be a mapping")
+    binding = Phase3OperationalBinding(
+        binding_version=str(payload["binding_version"]),
+        phase2_epoch_id=str(payload["phase2_epoch_id"]),
+        source_database=str(payload["source_database"]),
+        research_commit=str(payload["research_commit"]),
+        operations_commit=str(payload["operations_commit"]),
+        prospective_anchor=_parse_utc_timestamp(
+            payload["prospective_anchor"], field="prospective_anchor"
+        ),
+        first_eligible_boundary=_parse_utc_timestamp(
+            payload["first_eligible_boundary"], field="first_eligible_boundary"
+        ),
+        calendar_floor=_parse_utc_timestamp(
+            payload["calendar_floor"], field="calendar_floor"
+        ),
+        first_four_validation_status=str(payload["first_four_validation_status"]),
+    )
+    if binding.binding_version != "PHASE3_EPOCH006_OPERATIONAL_BINDING_V1":
+        raise ValueError("unsupported Phase 3 operational binding version")
+    if binding.phase2_epoch_id != "phase2_epoch_006":
+        raise ValueError("Phase 3 operational binding must target epoch006")
+    if Path(binding.source_database).name != "phase2_epoch_006.sqlite3":
+        raise ValueError("Phase 3 source database must target epoch006")
+    if len(binding.research_commit) != 40 or len(binding.operations_commit) != 40:
+        raise ValueError("Phase 3 source commits must be full SHA-1 identifiers")
+    if binding.first_eligible_boundary <= binding.prospective_anchor:
+        raise ValueError("first eligible boundary must be strictly after prospective anchor")
+    if binding.calendar_floor != binding.first_eligible_boundary + timedelta(days=42):
+        raise ValueError("calendar floor must be 42 days after first eligible boundary")
+    if binding.first_four_validation_status != "PHASE_2_EPOCH_006_FIRST4_VALIDATED":
+        raise ValueError("Phase 3 epoch006 requires validated first-four evidence")
+    return binding
 
 
 def _read_only_connection(path: str | Path) -> sqlite3.Connection:
@@ -476,3 +543,77 @@ def collect_operational_telemetry(
         }
     finally:
         db.close()
+
+
+def collect_bound_operational_telemetry(
+    database_path: str | Path,
+    *,
+    binding: Phase3OperationalBinding,
+    installed_operations_commit: str,
+    supervisor_event_log: str | Path | None = None,
+    observation_cutoff: datetime | None = None,
+) -> dict[str, Any]:
+    """Read only an epoch006 source after verifying its identity and evidence clock.
+
+    `installed_operations_commit` is intentionally an explicit caller-supplied
+    installed-runtime observation: the SQLite manifest records research identity,
+    while operations identity is not a manifest column.
+    """
+    path = Path(database_path)
+    if path.name != Path(binding.source_database).name:
+        raise ValueError("operational reader database filename does not match binding")
+    if installed_operations_commit != binding.operations_commit:
+        raise ValueError("installed operations commit does not match binding")
+    db = _read_only_connection(path)
+    try:
+        rows = db.execute(
+            "SELECT phase2_epoch_id,git_commit_hash,payload_json FROM phase2_manifests"
+        ).fetchall()
+        if len(rows) != 1:
+            raise ValueError("bound operational reader requires exactly one manifest")
+        manifest_row = rows[0]
+        manifest = json.loads(manifest_row["payload_json"])
+        if (
+            manifest_row["phase2_epoch_id"] != binding.phase2_epoch_id
+            or manifest.get("phase2_epoch_id") != binding.phase2_epoch_id
+            or manifest_row["git_commit_hash"] != binding.research_commit
+        ):
+            raise ValueError("source manifest does not match epoch006 research binding")
+        boundary, reset_applied = _validated_evidence_window(
+            db, phase2_epoch_id=binding.phase2_epoch_id
+        )
+        anchor_rows = db.execute(
+            "SELECT occurred_at FROM phase2_recovery_events "
+            "WHERE phase2_epoch_id=? AND event_type='PROSPECTIVE_START_ESTABLISHED'",
+            (binding.phase2_epoch_id,),
+        ).fetchall()
+        if len(anchor_rows) != 1:
+            raise ValueError("bound operational reader requires exactly one prospective anchor")
+        anchor = _parse_utc_timestamp(
+            anchor_rows[0]["occurred_at"], field="prospective anchor"
+        )
+        if (
+            reset_applied
+            or anchor != binding.prospective_anchor
+            or boundary != binding.first_eligible_boundary
+        ):
+            raise ValueError("source evidence window does not match epoch006 binding")
+    finally:
+        db.close()
+    telemetry = collect_operational_telemetry(
+        path,
+        supervisor_event_log=supervisor_event_log,
+        observation_cutoff=observation_cutoff,
+    )
+    telemetry["epoch_binding"] = {
+        "binding_version": binding.binding_version,
+        "phase2_epoch_id": binding.phase2_epoch_id,
+        "source_database": binding.source_database,
+        "research_commit": binding.research_commit,
+        "operations_commit": binding.operations_commit,
+        "prospective_anchor": binding.prospective_anchor.isoformat(),
+        "first_eligible_boundary": binding.first_eligible_boundary.isoformat(),
+        "calendar_floor": binding.calendar_floor.isoformat(),
+        "first_four_validation_status": binding.first_four_validation_status,
+    }
+    return telemetry

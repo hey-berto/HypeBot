@@ -1,8 +1,8 @@
 gate_version: PHASE3_ANALYSIS_GATE_V1
-phase2_epoch_id: phase2_epoch_002
-activation_timestamp: 2026-09-04T03:45:34.014109Z
+phase2_epoch_id: phase2_epoch_006
+activation_timestamp: 2026-09-24T00:15:00Z
 calendar_floor_days: 42
-earliest_formal_checkpoint: 2026-10-16T03:45:34.014109Z
+earliest_formal_checkpoint: 2026-11-05T00:15:00Z
 bootstrap:
   library: arch.bootstrap
   method: stationary

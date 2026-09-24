@@ -1,0 +1,9 @@
+binding_version: PHASE3_EPOCH006_OPERATIONAL_BINDING_V1
+phase2_epoch_id: phase2_epoch_006
+source_database: data/phase2/phase2_epoch_006.sqlite3
+research_commit: 41e9e9acc261fd69d32c2d811e9ab4dd556c4620
+operations_commit: e89a2f1eae58ec1f9a820de90d6e46713792c99f
+prospective_anchor: 2026-09-24T00:11:09.998160Z
+first_eligible_boundary: 2026-09-24T00:15:00Z
+calendar_floor: 2026-11-05T00:15:00Z
+first_four_validation_status: PHASE_2_EPOCH_006_FIRST4_VALIDATED

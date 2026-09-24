@@ -20,10 +20,15 @@ from hype_autopilot.phase3.gate import (
     lag_corrected_ess,
     load_analysis_gate,
 )
-from hype_autopilot.phase3.operational import collect_operational_telemetry
+from hype_autopilot.phase3.operational import (
+    collect_bound_operational_telemetry,
+    collect_operational_telemetry,
+    load_phase3_operational_binding,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE_PATH = ROOT / "config/phase3/analysis_gate_v1.yaml"
+BINDING_PATH = ROOT / "config/phase3/epoch006_operational_binding_v1.yaml"
 
 
 def gate():
@@ -68,10 +73,11 @@ def trade_counts():
 def test_gate_identity_and_calendar_floor_are_frozen():
     frozen = gate()
     assert frozen.gate_version == "PHASE3_ANALYSIS_GATE_V1"
+    assert frozen.phase2_epoch_id == "phase2_epoch_006"
     assert frozen.bootstrap_resamples == 10_000
     assert frozen.confidence_level == 0.90
     assert frozen.earliest_formal_checkpoint == datetime(
-        2026, 10, 16, 3, 45, 34, 14109, tzinfo=UTC
+        2026, 11, 5, 0, 15, tzinfo=UTC
     )
     assert len(frozen.config_hash) == 64
 
@@ -81,7 +87,7 @@ def test_synthetic_gate_promotes_positive_primary_pairs_and_ignores_open_pnl():
     report = evaluate_gate(
         frozen,
         GateEvidence(
-            phase2_epoch_id="phase2_epoch_002",
+            phase2_epoch_id="phase2_epoch_006",
             as_of=frozen.earliest_formal_checkpoint,
             triggered_trade_counts=trade_counts(),
             pairs=all_pairs(),
@@ -105,7 +111,7 @@ def test_synthetic_gate_promotes_positive_primary_pairs_and_ignores_open_pnl():
 def test_calendar_sample_and_ess_failures_are_inconclusive():
     frozen = gate()
     early = GateEvidence(
-        phase2_epoch_id="phase2_epoch_002",
+        phase2_epoch_id="phase2_epoch_006",
         as_of=frozen.earliest_formal_checkpoint - timedelta(seconds=1),
         triggered_trade_counts=trade_counts(),
         pairs=all_pairs(),
@@ -127,13 +133,155 @@ def test_non_fixture_cannot_reduce_frozen_bootstrap_repetitions():
         evaluate_gate(
             frozen,
             GateEvidence(
-                phase2_epoch_id="phase2_epoch_002",
+                phase2_epoch_id="phase2_epoch_006",
                 as_of=frozen.earliest_formal_checkpoint,
                 triggered_trade_counts=trade_counts(),
                 pairs=all_pairs(),
                 evidence_source="PRODUCTION_READ_ONLY",
             ),
             repetitions_override=10,
+        )
+
+
+def _epoch006_bound_fixture_database(
+    tmp_path: Path,
+    *,
+    anchor: datetime = datetime(2026, 9, 24, 0, 11, 9, 998160, tzinfo=UTC),
+    research_commit: str = "41e9e9acc261fd69d32c2d811e9ab4dd556c4620",
+) -> tuple[Path, datetime]:
+    """Synthetic only: contains identity/evidence-clock rows, never outcomes."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    database = tmp_path / "phase2_epoch_006.sqlite3"
+    db = sqlite3.connect(database)
+    db.row_factory = sqlite3.Row
+    repository = Phase2Repository(db)
+    repository.initialize()
+    manifest = {
+        "phase2_epoch_id": "phase2_epoch_006",
+        "frozen_contract": {
+            "model": "gpt-5.6-terra",
+            "model_version": "gpt-5.6-terra",
+            "resource_isolation": {"api_budget_usd_per_day": 10.0},
+        },
+    }
+    db.execute(
+        "INSERT INTO phase2_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "epoch006-fixture-manifest",
+            "phase2_epoch_006",
+            "phase2_epoch_006",
+            anchor.isoformat(),
+            research_commit,
+            "fixture-config",
+            "fixture-prompt",
+            "fixture-output",
+            "fixture-manifest",
+            "fixture-schema",
+            json.dumps(manifest),
+        ),
+    )
+    repository.record_recovery_event(
+        phase2_epoch_id="phase2_epoch_006",
+        event_type="PROSPECTIVE_START_ESTABLISHED",
+        source_identity="phase2_epoch_006",
+        payload={"prospective_start": anchor.isoformat()},
+        occurred_at=anchor,
+    )
+    anchor_hash = db.execute(
+        "SELECT integrity_hash FROM phase2_recovery_events "
+        "WHERE event_type='PROSPECTIVE_START_ESTABLISHED'"
+    ).fetchone()[0]
+    repository.establish_initial_evidence_window(
+        phase2_epoch_id="phase2_epoch_006",
+        prospective_start=anchor,
+        prospective_start_integrity_hash=anchor_hash,
+    )
+    first_boundary = datetime(2026, 9, 24, 0, 15, tzinfo=UTC)
+    for index in range(4):
+        boundary = first_boundary + timedelta(minutes=15 * index)
+        db.execute(
+            "INSERT INTO research_cycles "
+            "(cycle_id,scheduled_at,observation_class,started_at,status,details_json) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                f"epoch006-cycle-{index}",
+                boundary.isoformat(),
+                "SCORED_PROSPECTIVE",
+                boundary.isoformat(),
+                "COMPLETE",
+                '{"scoreable":true}',
+            ),
+        )
+    db.commit()
+    db.close()
+    return database, first_boundary
+
+
+def test_epoch006_binding_reads_only_matching_synthetic_evidence(tmp_path):
+    binding = load_phase3_operational_binding(BINDING_PATH)
+    database, first_boundary = _epoch006_bound_fixture_database(tmp_path)
+    before = database.read_bytes()
+
+    report = collect_bound_operational_telemetry(
+        database,
+        binding=binding,
+        installed_operations_commit="e89a2f1eae58ec1f9a820de90d6e46713792c99f",
+        observation_cutoff=first_boundary + timedelta(minutes=45),
+    )
+
+    assert database.read_bytes() == before
+    assert report["epoch_binding"] == {
+        "binding_version": "PHASE3_EPOCH006_OPERATIONAL_BINDING_V1",
+        "phase2_epoch_id": "phase2_epoch_006",
+        "source_database": "data/phase2/phase2_epoch_006.sqlite3",
+        "research_commit": "41e9e9acc261fd69d32c2d811e9ab4dd556c4620",
+        "operations_commit": "e89a2f1eae58ec1f9a820de90d6e46713792c99f",
+        "prospective_anchor": "2026-09-24T00:11:09.998160+00:00",
+        "first_eligible_boundary": "2026-09-24T00:15:00+00:00",
+        "calendar_floor": "2026-11-05T00:15:00+00:00",
+        "first_four_validation_status": "PHASE_2_EPOCH_006_FIRST4_VALIDATED",
+    }
+    assert report["effective_evidence_start"] == first_boundary.isoformat()
+    assert report["missing_boundaries"] == []
+
+
+def test_epoch006_binding_rejects_wrong_operations_identity_or_database(tmp_path):
+    binding = load_phase3_operational_binding(BINDING_PATH)
+    database, _ = _epoch006_bound_fixture_database(tmp_path)
+    with pytest.raises(ValueError, match="operations commit"):
+        collect_bound_operational_telemetry(
+            database,
+            binding=binding,
+            installed_operations_commit="0" * 40,
+        )
+    with pytest.raises(ValueError, match="database filename"):
+        collect_bound_operational_telemetry(
+            tmp_path / "phase2_epoch_005.sqlite3",
+            binding=binding,
+            installed_operations_commit=binding.operations_commit,
+        )
+
+
+def test_epoch006_binding_rejects_wrong_research_identity_or_anchor(tmp_path):
+    binding = load_phase3_operational_binding(BINDING_PATH)
+    wrong_research, _ = _epoch006_bound_fixture_database(
+        tmp_path / "wrong-research", research_commit="0" * 40
+    )
+    with pytest.raises(ValueError, match="research binding"):
+        collect_bound_operational_telemetry(
+            wrong_research,
+            binding=binding,
+            installed_operations_commit=binding.operations_commit,
+        )
+    wrong_anchor, _ = _epoch006_bound_fixture_database(
+        tmp_path / "wrong-anchor",
+        anchor=datetime(2026, 9, 24, 0, 11, 10, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="evidence window"):
+        collect_bound_operational_telemetry(
+            wrong_anchor,
+            binding=binding,
+            installed_operations_commit=binding.operations_commit,
         )
 
 
