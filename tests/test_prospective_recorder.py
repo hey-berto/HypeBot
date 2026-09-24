@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from hype_autopilot.prospective_recorder import CLASSIFICATION, ProspectiveRecorder
+from hype_recorder_service import HyperliquidRecorderService
 
 
 def test_append_only_ingestion_duplicate_order_and_gap(tmp_path):
@@ -30,3 +31,20 @@ def test_restart_creates_new_session_and_preserves_evidence(tmp_path):
     assert second.db.execute("SELECT COUNT(*) FROM recorder_sessions").fetchone()[0] == 2
     assert second.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0] == 1
     second.close()
+
+
+def test_adapter_restores_subscriptions_and_records_native_timestamps(tmp_path):
+    class Info:
+        def __init__(self): self.subscriptions = []
+        def subscribe(self, subscription, callback): self.subscriptions.append((subscription, callback))
+    recorder = ProspectiveRecorder(tmp_path / "recorder.sqlite3")
+    service = HyperliquidRecorderService(recorder, lambda _: Info())
+    info = service.connect()
+    assert len(info.subscriptions) == 3
+    service.handle({"channel": "trades", "data": [{"time": 1_700_000_000_000, "tid": 7, "px": "1"}]})
+    service.disconnected("test")
+    service.connect(service.session_id)
+    row = recorder.db.execute("SELECT stream,source_timestamp,source_key FROM recorder_raw_events").fetchone()
+    assert dict(row) == {"stream": "trades", "source_timestamp": "2023-11-14T22:13:20+00:00", "source_key": "7"}
+    assert recorder.health()["open_gaps"] == 0
+    recorder.close()

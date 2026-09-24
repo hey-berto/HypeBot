@@ -51,7 +51,6 @@ distributed system.
 
 ## Remaining implementation gate
 
-The storage core and test harness are complete. A production network launcher
-must be implemented and soak-tested on the separate VPS before installation;
-the service template intentionally names that future launcher and is not
-deployable as-is.
+The separate-host launcher subscribes to HYPE trades, L2, and active context,
+records funding through public read-only polling, and starts a distinct session
+after reconnect. It still requires a seven-day VPS soak before any installation.
