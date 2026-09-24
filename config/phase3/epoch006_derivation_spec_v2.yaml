@@ -1,0 +1,73 @@
+specification_version: PHASE3_EPOCH006_DERIVATION_SPEC_V2
+status: DRAFT_PENDING_INDEPENDENT_REVIEW
+created_at_utc: 2026-09-24T11:29:33Z
+scope: AMENDED_BLINDED_PRIMARY_ANALYSIS
+reason_for_amendment: V1 froze the evaluator but not the database-to-GateEvidence derivation layer.
+evidence_window:
+  epoch_id: phase2_epoch_006
+  prospective_anchor: 2026-09-24T00:11:09.998160Z
+  first_eligible_boundary: 2026-09-24T00:15:00Z
+  formal_cutoff: 2026-11-05T00:15:00Z
+  retained_unchanged: true
+v1_preservation:
+  evaluator_sha256: e606da9c85a6752de2a0bf3b5ba7e53819d8d78fcf46c0b020cdc5a4c52ce78b
+  gate_config_sha256: 9760e1d3ae3c4ddcbdd7a43d993c86220270e0b22ec79e4488b9bd5261ad87d2
+  statement: V1 remains unchanged but was under-specified for production GateEvidence derivation.
+author_exposure:
+  not_seen: [epoch006_pnl, returns, expectancy, win_rates, comparative_performance, day42_outcomes]
+  no_outcome_access_attestation: true
+  operational_information_seen: [first_four_validation_health, identity_hashes, integrity_and_gap_counts, timer_and_process_telemetry, historical_sample_rate_planning, synthetic_fixture_results]
+  qualification: Operational/sample telemetry may reveal sample availability; this is not complete outcome blindness.
+canonical_population:
+  include: SCORED_PROSPECTIVE_scoreable_snapshots_with_timestamp_inclusive_between_first_boundary_and_cutoff
+  rejected_or_non_scoreable: EXCLUDED_NEVER_REINTERPRETED
+  post_cutoff: REJECT
+pair_state:
+  coeligible: both_legs_flat_immediately_before_current_boundary_decisions
+  active_interval: signal_time_strictly_before_boundary_and_exit_time_null_or_strictly_after_boundary
+  not_coeligible: either_leg_not_flat
+  complete: coeligible_and_neither_leg_pending_or_open
+  right_censored: coeligible_and_at_least_one_leg_pending_or_open
+  excluded: non_scoreable_or_rejected_or_not_coeligible
+  boundary_sequence: simulator_progression_then_snapshot_then_decisions_then_submission
+return_unit:
+  chosen: return_pct
+  definition: stored_closed_trade_return_pct_or_zero_for_NO_TRADE_or_suppressed_completed_leg
+  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+cost_adjustment:
+  chosen: paired_return_difference_minus_treatment_api_cost_normalized_by_shared_snapshot_price_plus_control_api_cost_normalized_by_shared_snapshot_price
+  shared_snapshot_price: market.hype_features.last_15m_close
+  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+  double_counting: return_pct_already_includes_stored_entry_exit_fees_funding_and_simulator_slippage;_only_API_cost_is_additional
+api_cost:
+  chosen: full_invocation_cost_to_each_LLM_dependent_treatment_comparison_and_zero_to_quant_control
+  applies_to: [LLM_V1, HYBRID_TREND_LLM_V1, HYBRID_MR_LLM_V1]
+  non_additivity_warning: Per-comparison costs are not portfolio costs and must not be summed across comparisons.
+  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+triggered_trade:
+  chosen: one_closed_paper_trade_per_strategy_decision_originated_in_population
+  excludes: [NO_TRADE, PENDING_ENTRY, OPEN, SUPPRESSED_POSITION_OPEN, SUPPRESSED_INVALID_TARGET_AFTER_LATENCY, SUPPRESSED_NO_ENTRY_DATA]
+  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+regime:
+  trend_state: snapshot.regime.trend
+  volatility_state: snapshot.regime.volatility
+  regime_bucket: snapshot.regime.combined
+  missing_label: REJECT
+right_censoring:
+  duration: formal_cutoff_minus_shared_snapshot_timestamp
+  cardinality: one_duration_per_coeligible_right_censored_pair
+  pending_and_open: both_censor_the_pair_without_MTM
+  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+series_order:
+  chosen: ascending_snapshot_timestamp_then_snapshot_hash
+  classification: FROZEN_PRECEDENT
+numeric_policy:
+  decimal_places: 10
+  rounding: ROUND_HALF_EVEN
+  serialization: hype_autopilot.hashing.canonical_json
+  zero: 0.0000000000
+  missing_or_non_applicable: null_only_outside_complete_numeric_series
+implementation_gate:
+  adapter_prohibited_until: [no_unresolved_consequential_fields, written_rationales, discriminating_golden_fixtures, independent_review, final_bytes_frozen, spec_sha256_recorded, outcome_firewall_intact]
+independent_review:
+  status: PENDING
