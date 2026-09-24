@@ -22,6 +22,7 @@ from typing import Any
 EPOCH = "phase2_epoch_006"
 UTC = timezone.utc
 BOUNDARIES = tuple(f"2026-09-24T{minute}:00Z" for minute in ("00:15", "00:30", "00:45", "01:00"))
+FIRST4_WINDOW_END = "2026-09-24T01:15:00Z"
 EXPECTED = {
     "research_commit": "41e9e9acc261fd69d32c2d811e9ab4dd556c4620",
     "operations_commit": "e89a2f1eae58ec1f9a820de90d6e46713792c99f",
@@ -51,6 +52,10 @@ def parse_json(value: str | None) -> dict[str, Any]:
 
 def iso(value: str) -> str:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).isoformat()
+
+
+def instant(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 def ro(path: str) -> sqlite3.Connection:
@@ -86,12 +91,15 @@ def service_properties(unit: str, properties: list[str]) -> dict[str, str]:
     return dict(line.split("=", 1) for line in result.splitlines() if "=" in line)
 
 
-def event_log(path: str, start: str) -> list[dict[str, Any]]:
+def event_log(path: str, start: str, end: str | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
         for line in Path(path).read_text().splitlines():
             row = parse_json(line)
-            if row and str(row.get("timestamp", "")) >= start:
+            timestamp = row.get("timestamp")
+            if row and isinstance(timestamp, str) and instant(timestamp) >= instant(start) and (
+                end is None or instant(timestamp) <= instant(end)
+            ):
                 rows.append(row)
     except OSError:
         pass
@@ -113,8 +121,17 @@ def fresh(snapshot: sqlite3.Row | None, boundary: str) -> str:
     return "FRESH" if iso(snapshot["snapshot_timestamp"]) == iso(boundary) else "STALE"
 
 
+def cycle_rows_at_boundary(db: sqlite3.Connection, boundary: str) -> list[sqlite3.Row]:
+    """Compare SQLite timestamps as instants, never as storage spellings."""
+    candidates = db.execute(
+        "SELECT * FROM research_cycles WHERE observation_class='SCORED_PROSPECTIVE'"
+    ).fetchall()
+    wanted = instant(boundary)
+    return [row for row in candidates if instant(row["scheduled_at"]) == wanted]
+
+
 def cycle_row(db: sqlite3.Connection, boundary: str, failures: list[str], telemetry: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = db.execute("SELECT * FROM research_cycles WHERE scheduled_at=? AND observation_class='SCORED_PROSPECTIVE'", (boundary,)).fetchall()
+    rows = cycle_rows_at_boundary(db, boundary)
     row: sqlite3.Row | None = rows[0] if len(rows) == 1 else None
     result: dict[str, Any] = {"boundary": boundary, "cycle_status": None, "scoreable": None, "snapshot_freshness": "N/A", "regime": None, "quant_trend": None, "quant_mr": None, "detector": None, "llm_attempts": 0, "llm_status": None, "hybrid_trend": None, "hybrid_mr": None, "suppression_coeligibility": "N/A", "mullvad_per_call": "N/A", "integrity": "PASS", "lineage": {}}
     if len(rows) != 1:
@@ -171,7 +188,7 @@ def cycle_row(db: sqlite3.Connection, boundary: str, failures: list[str], teleme
         # it from the frozen manifest.
         if model != EXPECTED["model"] or reasoning != EXPECTED["reasoning"] or attempt["tool_calls_count"] != 0:
             failures.append(f"attempt {attempt['attempt_id']}: provider model/reasoning/tool-call invariant failed")
-        telemetry.append({"attempt_id": attempt["attempt_id"], "started_at": attempt["started_at"], "raw_hash_ok": raw_ok, "model": model, "reasoning": reasoning, "tool_calls_count": attempt["tool_calls_count"]})
+        telemetry.append({"attempt_id": attempt["attempt_id"], "started_at": attempt["started_at"], "ended_at": attempt["ended_at"], "raw_hash_ok": raw_ok, "model": model, "reasoning": reasoning, "tool_calls_count": attempt["tool_calls_count"]})
     # A position-open suppression must not also have a fresh trade/order for that decision.
     suppressed = db.execute("SELECT strategy_decision_id,status FROM paper_trades WHERE snapshot_hash=? AND status LIKE 'SUPPRESSED_%'", (snap["snapshot_hash"],)).fetchall()
     conflicts = 0
@@ -182,7 +199,6 @@ def cycle_row(db: sqlite3.Connection, boundary: str, failures: list[str], teleme
     result["lineage"]["pair_integrity_hashes"] = [r["integrity_hash"] for r in pairs]
     if conflicts:
         failures.append(f"boundary {boundary}: suppressed strategy has fresh paper order")
-    guards = [x for x in telemetry if x["started_at"] >= row["started_at"] and x["started_at"] <= (row["completed_at"] or row["started_at"])]
     result["mullvad_per_call"] = "PENDING_LOG_MATCH" if attempts else "N/A"
     result["lineage"]["attempt_integrity_hashes"] = [a["integrity_hash"] for a in attempts]
     if any(not f.startswith(f"boundary {boundary}") for f in []): pass
@@ -211,8 +227,9 @@ def main() -> int:
         clock = {"anchor_count": len(anchor_rows), "window_count": len(windows), "anchor": anchor_rows[0]["occurred_at"] if len(anchor_rows)==1 else None, "first_boundary": windows[0]["first_eligible_boundary"] if len(windows)==1 else None}
         if clock["anchor_count"] != 1 or clock["window_count"] != 1 or iso(str(clock["anchor"])) != EXPECTED["anchor"] or iso(str(clock["first_boundary"])) != EXPECTED["first_boundary"]:
             failures.append("evidence clock anchor/window invariant failed")
-        pre = scalar(db, "SELECT COUNT(*) FROM decision_snapshots WHERE epoch_id=? AND observation_class='SCORED_PROSPECTIVE' AND snapshot_timestamp<?", (EPOCH, "2026-09-24T00:15:00Z"))
-        if pre: failures.append(f"pre-boundary scored prospective snapshots observed: {pre}")
+        prospective_snapshots = db.execute("SELECT * FROM decision_snapshots WHERE epoch_id=? AND observation_class='SCORED_PROSPECTIVE'", (EPOCH,)).fetchall()
+        pre = [row for row in prospective_snapshots if instant(row["snapshot_timestamp"]) < instant(EXPECTED["first_boundary"])]
+        if pre: failures.append(f"pre-boundary scored prospective snapshots observed: {len(pre)}")
         rows = [cycle_row(db, boundary, failures, attempts_telemetry) for boundary in BOUNDARIES]
     finally: db.close()
     service = service_properties("hypebot-phase2.service", ["ActiveState", "UnitFileState", "MainPID", "NRestarts"]); timer = service_properties("hypebot-phase2-health.timer", ["ActiveState", "UnitFileState", "LastTriggerUSec", "NextElapseUSecMonotonic"])
@@ -220,29 +237,36 @@ def main() -> int:
     runtime = {"service": service, "worker_lease": worker, "supervisor_lease": supervisor}
     if service.get("ActiveState") != "active" or service.get("UnitFileState") != "enabled" or service.get("NRestarts") != "0" or not worker["alive"] or not supervisor["alive"] or worker.get("metadata", {}).get("epoch_id") != EPOCH or supervisor.get("metadata", {}).get("epoch_id") != EPOCH:
         failures.append("runtime continuity/lease invariant failed")
-    events = event_log(args.event_log, "2026-09-24T00:11:07")
-    starts = [x for x in events if x.get("event") == "SCHEDULER_PROCESS_START"]
+    events = event_log(args.event_log, "2026-09-24T00:11:07Z")
+    starts = [x for x in events if x.get("event") == "WORKER_STARTED"]
     if len(starts) != 1: failures.append(f"supervisor event log worker relaunch count is {len(starts)}, expected 1")
     # The initially observed PIDs remain required when no preserved relaunch exists.
     if len(starts) == 1 and (service.get("MainPID") != "209333" or worker.get("metadata", {}).get("pid") != 209458):
         failures.append("runtime PID changed without an evidence-preserved worker relaunch")
-    process_lines = cmd("ps", "-eo", "pid=,args=").splitlines()
-    worker_processes = [line for line in process_lines if "phase2_epoch006_runtime_worker.py" in line]
+    process_lines = cmd("ps", "-eo", "pid=,ppid=,args=").splitlines()
+    expected_worker_pid = worker.get("metadata", {}).get("pid")
+    worker_processes = [line for line in process_lines if line.split(maxsplit=1) and str(expected_worker_pid) == line.split(maxsplit=1)[0] and "phase2_epoch006_runtime_worker.py" in line]
     if len(worker_processes) != 1:
         failures.append(f"competing writer check observed {len(worker_processes)} epoch006 worker processes")
-    health_journal = cmd("journalctl", "-u", "hypebot-phase2-health.service", "--since", "2026-09-24 00:11:07 UTC", "--no-pager", "-o", "json")
+    health_journal = cmd("journalctl", "-u", "hypebot-phase2-health.service", "--since", "2026-09-24 00:11:07 UTC", "--until", "2026-09-24 01:15:00 UTC", "--no-pager", "-o", "json")
     health_records = [parse_json(line) for line in health_journal.splitlines() if line.strip()]
-    health_successes = sum(1 for record in health_records if str(record.get("MESSAGE", "")).find("Succeeded") >= 0)
-    health_failures = sum(1 for record in health_records if str(record.get("MESSAGE", "")).find("Failed") >= 0)
+    health_successes = sum(1 for record in health_records if "Finished hypebot-phase2-health.service" in str(record.get("MESSAGE", "")))
+    health_failures = sum(1 for record in health_records if "Main process exited" in str(record.get("MESSAGE", "")) and "status=1/FAILURE" in str(record.get("MESSAGE", "")))
     if timer.get("ActiveState") != "active" or timer.get("UnitFileState") != "enabled" or not timer.get("LastTriggerUSec") or timer.get("NextElapseUSecMonotonic", "").lower() in {"", "0", "infinity"} or health_successes < 2 or health_failures:
         failures.append("health timer invariant failed")
-    network = event_log(args.network_log, "2026-09-24T00:15:00")
-    actual_attempts = [a for r in rows for a in r["lineage"].get("attempt_integrity_hashes", [])]
+    network = event_log(args.network_log, "2026-09-24T00:15:00Z")
+    actual_attempts = attempts_telemetry
     guard_pass = 0
-    for entry in network:
-        if entry.get("component") == "phase2_epoch006_runtime_network_guard" and entry.get("status") == "PASS" and entry.get("interface") == "wg0-mullvad": guard_pass += 1
-        if entry.get("component") == "phase2_epoch006_runtime_network_guard" and entry.get("status") == "BLOCKED": failures.append("per-call Mullvad guard recorded BLOCKED")
-    if len(actual_attempts) != guard_pass: failures.append(f"per-call Mullvad guard evidence count {guard_pass} does not match actual LLM attempts {len(actual_attempts)}")
+    for attempt in actual_attempts:
+        attempt_start = instant(attempt["started_at"])
+        linked = [entry for entry in network if entry.get("component") == "phase2_epoch006_runtime_network_guard" and instant(str(entry["timestamp"])) <= attempt_start and (attempt_start - instant(str(entry["timestamp"]))).total_seconds() <= 60]
+        if any(entry.get("status") == "BLOCKED" for entry in linked):
+            failures.append(f"attempt {attempt['attempt_id']}: per-call Mullvad guard recorded BLOCKED")
+        passed = [entry for entry in linked if entry.get("status") == "PASS" and entry.get("interface") == "wg0-mullvad" and entry.get("relay_country") == "sg"]
+        if len(passed) != 1:
+            failures.append(f"attempt {attempt['attempt_id']}: missing or ambiguous per-call Mullvad PASS evidence")
+        else:
+            guard_pass += 1
     status = "PHASE_2_EPOCH_006_FIRST4_CONCERN" if failures else "PHASE_2_EPOCH_006_FIRST4_VALIDATED"
     print(json.dumps({"status": status, "validated_at": datetime.now(UTC).isoformat(), "identity": {"expected": {k:v for k,v in EXPECTED.items() if k in observed_identity}, "observed": observed_identity, "mismatches": identity_mismatches}, "runtime": {**runtime, "worker_processes": worker_processes}, "timer": {**timer, "health_successes": health_successes, "health_failures": health_failures}, "database": integrity, "evidence_clock": clock, "boundaries": rows, "provider": {"attempts": attempts_telemetry, "raw_response_hash_verification": "recomputed for every stored plaintext response", "information_boundary": "tool_calls_count == 0 and the recorded invocation metadata demonstrate absence of the currently instrumented external-tool leakage mechanism; this is not an exhaustive proof against every hypothetical leakage mechanism."}, "supervisor_event_starts": len(starts), "mullvad": {"pass_records": guard_pass, "actual_invocations": len(actual_attempts)}, "failures": failures}, sort_keys=True, indent=2))
     return 0 if not failures else 2
