@@ -2,15 +2,15 @@
 Description=HYPE Autopilot Phase 2 sanitized operational health check
 After=hypebot-phase2.service
 OnFailure=hypebot-alert@%n.service
-ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-005.grant.json
+ConditionPathExists=/etc/hypebot/authorized/phase2-epoch-006.grant.json
 
 [Service]
 Type=oneshot
 User=hypebot
 Group=hypebot
 WorkingDirectory=/opt/hypebot/phase2
-ExecStartPre=/opt/hypebot/phase2/.venv/bin/python /opt/hypebot/operations/deploy/operations/phase2_epoch005_start_gate.py --network-only
-ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-tooling phase2-health --database /var/lib/hypebot/phase2/phase2_epoch_005.sqlite3 --worker-lease /run/lock/hypebot/phase2.writer.lock --supervisor-lease /run/lock/hypebot/phase2.supervisor.lock --maximum-boundary-age-minutes 20
+ExecStartPre=/opt/hypebot/phase2/.venv/bin/python /opt/hypebot/operations/deploy/operations/phase2_epoch006_start_gate.py --network-only
+ExecStart=/opt/hypebot/phase2/.venv/bin/hype-autopilot-tooling phase2-health --database /var/lib/hypebot/phase2/phase2_epoch_006.sqlite3 --worker-lease /run/lock/hypebot/phase2.writer.lock --supervisor-lease /run/lock/hypebot/phase2.supervisor.lock --maximum-boundary-age-minutes 20
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

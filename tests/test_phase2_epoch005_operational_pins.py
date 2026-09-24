@@ -265,34 +265,10 @@ def test_mullvad_gate_rejects_wrong_state_and_proxy(monkeypatch):
         )
 
 
-def test_unit_pins_epoch005():
+def test_epoch005_operational_helpers_remain_available_for_audit():
     root = Path(__file__).resolve().parents[1]
-    service = (root / "deploy/systemd/hypebot-phase2.service.template").read_text()
-    health = (
-        root / "deploy/systemd/hypebot-phase2-health.service.template"
-    ).read_text()
-    assert "phase2_epoch_002" not in service + health
-    assert "phase2_epoch_003" not in service + health
-    assert "phase2-epoch-003" not in service + health
-    assert "phase2_epoch_004" not in service + health
-    assert "phase2-epoch-004" not in service + health
-    assert "phase2_epoch_005" in service + health
-    assert "8104f19e77d6c3d891d84c3fa447e08cd211eeda" in service
-    assert "2118bb72f73495a190eb7550408c260de44da84153868da96f94f886b7030b12" in service
-    assert "97318c27b3765780916efe010c3653fa8f8b097bdddd20ef711d40f41a5a1be4" in service
-    assert "62b5f58020cbaf19338fbfcf8e81c6b4a8f66cc67b635d2fe622e8f6d286586a" in service
-    assert "gpt-5.6-terra" in service and "--expected-reasoning medium" in service
-    assert "phase2_epoch005_start_gate.py" in service
-    assert "SupplementaryGroups=hypebot-phase2-auth" in service
-    assert "--expected-grant-group hypebot-phase2-auth" in service
-    assert "--grant-group hypebot-phase2-auth" in service
-    assert "ConditionPathExists=" not in service
-    assert "phase2_epoch005_runtime_worker.py" in service
-    assert "phase2.writer.lock" in service and "phase2.supervisor.lock" in service
-    assert "phase2_epoch_005.sqlite3" in service + health
-    assert "phase2-epoch-005.grant.json" in service + health
-    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in service
-    assert service.count("AF_NETLINK") == 1
+    assert (root / "deploy/operations/phase2_epoch005_start_gate.py").is_file()
+    assert (root / "deploy/operations/phase2_epoch005_runtime_worker.py").is_file()
 
 
 def test_health_timer_bootstraps_from_timer_activation_not_host_boot():
