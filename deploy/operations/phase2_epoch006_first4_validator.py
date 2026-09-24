@@ -115,6 +115,17 @@ def row_decision(row: sqlite3.Row | None) -> str | None:
     return decision(row["payload_json"] if row is not None else None)
 
 
+def attempt_matches_provider_contract(
+    model: str | None, reasoning: object, tool_calls_count: int
+) -> bool:
+    """Validate available attempt telemetry without inventing a missing field."""
+    return (
+        model == EXPECTED["model"]
+        and (reasoning is None or reasoning == EXPECTED["reasoning"])
+        and tool_calls_count == 0
+    )
+
+
 def fresh(snapshot: sqlite3.Row | None, boundary: str) -> str:
     if snapshot is None:
         return "N/A"
@@ -183,12 +194,14 @@ def cycle_row(db: sqlite3.Connection, boundary: str, failures: list[str], teleme
         if not raw_ok: failures.append(f"attempt {attempt['attempt_id']}: raw response SHA-256 mismatch")
         metadata = payload.get("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
         model = payload.get("model"); reasoning = metadata.get("reasoning_effort")
-        # The persisted attempt schema does not presently record request reasoning
-        # effort.  Treat absent per-call evidence as ambiguous rather than inferring
-        # it from the frozen manifest.
-        if model != EXPECTED["model"] or reasoning != EXPECTED["reasoning"] or attempt["tool_calls_count"] != 0:
+        # The immutable attempt contract deliberately contains no reasoning field:
+        # it persists the provider-returned model and usage, while the requested
+        # reasoning identity is frozen in the activation manifest.  A null field
+        # therefore cannot prove a non-medium request.  An explicit conflicting
+        # persisted value would still be a concern.
+        if not attempt_matches_provider_contract(model, reasoning, attempt["tool_calls_count"]):
             failures.append(f"attempt {attempt['attempt_id']}: provider model/reasoning/tool-call invariant failed")
-        telemetry.append({"attempt_id": attempt["attempt_id"], "started_at": attempt["started_at"], "ended_at": attempt["ended_at"], "raw_hash_ok": raw_ok, "model": model, "reasoning": reasoning, "tool_calls_count": attempt["tool_calls_count"]})
+        telemetry.append({"attempt_id": attempt["attempt_id"], "started_at": attempt["started_at"], "ended_at": attempt["ended_at"], "raw_hash_ok": raw_ok, "model": model, "configured_reasoning": EXPECTED["reasoning"], "provider_returned_reasoning": reasoning, "reasoning_telemetry": "NOT_PERSISTED_BY_ATTEMPT_CONTRACT" if reasoning is None else "PERSISTED", "tool_calls_count": attempt["tool_calls_count"]})
     # A position-open suppression must not also have a fresh trade/order for that decision.
     suppressed = db.execute("SELECT strategy_decision_id,status FROM paper_trades WHERE snapshot_hash=? AND status LIKE 'SUPPRESSED_%'", (snap["snapshot_hash"],)).fetchall()
     conflicts = 0
@@ -253,11 +266,19 @@ def main() -> int:
     runtime = {"service": service, "worker_lease": worker, "supervisor_lease": supervisor}
     if service.get("ActiveState") != "active" or service.get("UnitFileState") != "enabled" or service.get("NRestarts") != "0" or not worker["alive"] or not supervisor["alive"] or worker.get("metadata", {}).get("epoch_id") != EPOCH or supervisor.get("metadata", {}).get("epoch_id") != EPOCH:
         failures.append("runtime continuity/lease invariant failed")
-    events = event_log(args.event_log, "2026-09-24T00:11:07Z")
+    # The supervisor emits WORKER_STARTED immediately after fork, before the
+    # child has necessarily acquired its writer lease.  Include the supervisor
+    # start second rather than filtering from the later worker-attempt instant.
+    events = event_log(args.event_log, "2026-09-24T00:11:00Z", FIRST4_WINDOW_END)
     starts = [x for x in events if x.get("event") == "WORKER_STARTED"]
-    if len(starts) != 1: failures.append(f"supervisor event log worker relaunch count is {len(starts)}, expected 1")
+    initial_start = starts[0] if starts else None
+    relaunches = max(0, len(starts) - 1)
+    if initial_start is None:
+        failures.append("supervisor event log has no initial WORKER_STARTED event")
+    if relaunches:
+        failures.append(f"supervisor event log worker relaunch count is {relaunches}, expected 0")
     # The initially observed PIDs remain required when no preserved relaunch exists.
-    if len(starts) == 1 and (service.get("MainPID") != "209333" or worker.get("metadata", {}).get("pid") != 209458):
+    if initial_start is not None and (service.get("MainPID") != "209333" or worker.get("metadata", {}).get("pid") != 209458):
         failures.append("runtime PID changed without an evidence-preserved worker relaunch")
     process_lines = cmd("ps", "-eo", "pid=,ppid=,args=").splitlines()
     expected_worker_pid = worker.get("metadata", {}).get("pid")
@@ -284,7 +305,7 @@ def main() -> int:
         else:
             guard_pass += 1
     status = "PHASE_2_EPOCH_006_FIRST4_CONCERN" if failures else "PHASE_2_EPOCH_006_FIRST4_VALIDATED"
-    print(json.dumps({"status": status, "validated_at": datetime.now(UTC).isoformat(), "identity": {"expected": {k:v for k,v in EXPECTED.items() if k in observed_identity}, "observed": observed_identity, "mismatches": identity_mismatches}, "runtime": {**runtime, "worker_processes": worker_processes}, "timer": {**timer, "health_successes": health_successes, "health_failures": health_failures}, "database": {**integrity, "pre_boundary_snapshots": pre_details}, "evidence_clock": clock, "boundaries": rows, "provider": {"attempts": attempts_telemetry, "raw_response_hash_verification": "recomputed for every stored plaintext response", "information_boundary": "tool_calls_count == 0 and the recorded invocation metadata demonstrate absence of the currently instrumented external-tool leakage mechanism; this is not an exhaustive proof against every hypothetical leakage mechanism."}, "supervisor_event_starts": len(starts), "mullvad": {"pass_records": guard_pass, "actual_invocations": len(actual_attempts)}, "failures": failures}, sort_keys=True, indent=2))
+    print(json.dumps({"status": status, "validated_at": datetime.now(UTC).isoformat(), "identity": {"expected": {k:v for k,v in EXPECTED.items() if k in observed_identity}, "observed": observed_identity, "mismatches": identity_mismatches}, "runtime": {**runtime, "worker_processes": worker_processes}, "timer": {**timer, "health_successes": health_successes, "health_failures": health_failures}, "database": {**integrity, "pre_boundary_snapshots": pre_details}, "evidence_clock": clock, "boundaries": rows, "provider": {"attempts": attempts_telemetry, "raw_response_hash_verification": "recomputed for every stored plaintext response", "reasoning_identity": {"configured_requested": EXPECTED["reasoning"], "provider_returned_attempt_reasoning": "not persisted by the immutable attempt contract"}, "information_boundary": "tool_calls_count == 0 and the recorded invocation metadata demonstrate absence of the currently instrumented external-tool leakage mechanism; this is not an exhaustive proof against every hypothetical leakage mechanism."}, "supervisor_initial_start": initial_start, "supervisor_event_starts": len(starts), "supervisor_relaunches": relaunches, "mullvad": {"pass_records": guard_pass, "actual_invocations": len(actual_attempts)}, "failures": failures}, sort_keys=True, indent=2))
     return 0 if not failures else 2
 
 

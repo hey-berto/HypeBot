@@ -46,14 +46,26 @@ def test_event_log_uses_instants_and_actual_worker_started_name(tmp_path: Path) 
     event_log.write_text(
         json.dumps(
             {
-                "timestamp": "2026-09-24T00:11:07.100000+00:00",
+                "timestamp": "2026-09-24T00:11:06.900000+00:00",
                 "event": "WORKER_STARTED",
+                "supervisor_pid": 209333,
+                "details": {"worker_pid": 209458},
             }
         )
         + "\n"
     )
-    events = validator.event_log(str(event_log), "2026-09-24T00:11:07Z")
+    events = validator.event_log(str(event_log), "2026-09-24T00:11:00Z")
     assert [event["event"] for event in events] == ["WORKER_STARTED"]
+    assert events[0]["details"]["worker_pid"] == 209458
+
+
+def test_missing_provider_returned_reasoning_is_telemetry_limitation() -> None:
+    validator = validator_module()
+    assert validator.attempt_matches_provider_contract("gpt-5.6-terra", None, 0)
+    assert validator.attempt_matches_provider_contract("gpt-5.6-terra", "medium", 0)
+    assert not validator.attempt_matches_provider_contract(
+        "gpt-5.6-terra", "high", 0
+    )
 
 
 def test_authoritative_writer_pid_excludes_supervisor_argv_match() -> None:
