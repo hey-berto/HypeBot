@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-import time
 import os
-import subprocess
 import queue
 import shutil
+import sqlite3
+import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from hype_autopilot.hashing import canonical_json
-
 
 CLASSIFICATION = "FUTURE_RESEARCH_DATA — NOT EPOCH006 EVIDENCE"
 SCHEMA = """
@@ -165,6 +165,30 @@ class ProspectiveRecorder:
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         return {"archive": str(archive), "integrity": integrity, "sha256": digest}
 
+    def rotate_live(self, archive_dir: str | Path, day: str) -> dict:
+        """Seal this active DB by atomic rename after draining/checkpointing."""
+        archive = Path(archive_dir) / f"hype-raw-{day}.sqlite3"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        if archive.exists():
+            raise FileExistsError(f"sealed archive already exists: {archive}")
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        integrity = self.db.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise RuntimeError("refusing rotation: active database integrity check failed")
+        self.db.close()
+        os.replace(self.database, archive)
+        # A successful truncate checkpoint means these sidecars contain no
+        # unsealed events.  Do not let an old WAL/SHM pair attach to the new
+        # database created at the active path.
+        for sidecar in (self.database.with_name(self.database.name + "-wal"), self.database.with_name(self.database.name + "-shm")):
+            if sidecar.exists():
+                sidecar.unlink()
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        # The recorder never reopens a sealed archive for writing.  The mode is
+        # an additional OS-level guard; the SHA-256 is the content identity.
+        archive.chmod(0o444)
+        return {"archive": str(archive), "integrity": integrity, "sha256": digest}
+
 
 @dataclass(frozen=True)
 class QueueConfig:
@@ -183,28 +207,96 @@ class BufferedIngestion:
         self.latencies: dict[str, list[float]] = {}
         self.over_warning_since: float | None = None
         self.recovery_seconds: list[float] = []
+        self.writer_lock = threading.RLock()
+        self.session_remap: dict[str, str] = {}
+        self.last_rotation_gap_map: dict[str, str] = {}
+        self.rotation_in_progress = False
+        self.pending_overflow_evidence: list[dict] = []
 
     def submit(self, item: dict) -> str:
         try: self.items.put_nowait({**item, "enqueued_ns": time.monotonic_ns()})
         except queue.Full:
             self.overflow_count += 1
-            self.recorder.connection_event(item["session_id"], "QUEUE_OVERFLOW", {"stream": item["stream"], "capacity": self.config.capacity})
+            evidence = {"stream": item["stream"], "capacity": self.config.capacity}
+            if self.rotation_in_progress:
+                # The old connection may already be closed.  Preserve the
+                # failure indicator and write it as the first new-session
+                # evidence rather than losing it with the rejected event.
+                self.pending_overflow_evidence.append(evidence)
+            else:
+                self.recorder.connection_event(item["session_id"], "QUEUE_OVERFLOW", evidence)
             return "OVERFLOW_RECORDED_NOT_DURABLE"
         self.max_depth = max(self.max_depth, self.items.qsize())
         if self.items.qsize() >= self.config.warning_occupancy * self.config.capacity and self.over_warning_since is None: self.over_warning_since = time.monotonic()
         return "QUEUED"
 
     def drain(self, limit: int | None = None) -> int:
-        count = 0
-        while not self.items.empty() and (limit is None or count < limit):
-            item = self.items.get_nowait(); enqueued = item.pop("enqueued_ns")
-            self.recorder.ingest(**item)
-            self.latencies.setdefault(item["stream"], []).append((time.monotonic_ns() - enqueued) / 1e9)
-            count += 1
-        if self.over_warning_since is not None and self.items.qsize() < self.config.warning_occupancy * self.config.capacity:
-            self.recovery_seconds.append(time.monotonic() - self.over_warning_since); self.over_warning_since = None
-        return count
+        """Single durable writer; producers may continue queueing during rotation."""
+        with self.writer_lock:
+            count = 0
+            while not self.items.empty() and (limit is None or count < limit):
+                item = self.items.get_nowait(); enqueued = item.pop("enqueued_ns")
+                session_id = item["session_id"]
+                while session_id in self.session_remap:
+                    session_id = self.session_remap[session_id]
+                item["session_id"] = session_id
+                self.recorder.ingest(**item)
+                self.latencies.setdefault(item["stream"], []).append((time.monotonic_ns() - enqueued) / 1e9)
+                count += 1
+            if self.over_warning_since is not None and self.items.qsize() < self.config.warning_occupancy * self.config.capacity:
+                self.recovery_seconds.append(time.monotonic() - self.over_warning_since); self.over_warning_since = None
+            return count
 
     def health(self) -> dict:
         percentile = lambda v, p: sorted(v)[int((len(v)-1)*p)] if v else None
         return {"queue_depth": self.items.qsize(), "max_queue_depth": self.max_depth, "overflow_count": self.overflow_count, "warning_sustained_seconds": (time.monotonic()-self.over_warning_since) if self.over_warning_since else 0.0, "recovery_seconds": self.recovery_seconds, "warning": self.items.qsize() >= self.config.warning_occupancy*self.config.capacity, "failure": self.items.qsize() >= self.config.failure_occupancy*self.config.capacity or self.overflow_count > 0, "write_latency_seconds": {s: {"count": len(v), "p50": percentile(v,.5), "p95": percentile(v,.95), "p99": percentile(v,.99), "max": max(v) if v else None} for s,v in self.latencies.items()}}
+
+    def rotate(self, archive_dir: str | Path, day: str, prior_session_id: str, metadata: dict | None = None, rotation_hook=None) -> tuple[dict, str]:
+        """Seal the old day and switch the sole durable writer to a fresh DB.
+
+        Producers are intentionally not stopped: they can queue while the
+        writer lock is held.  Every item carrying the prior session is remapped
+        to the new session before it can be durably written in the new DB.
+        """
+        with self.writer_lock:
+            self.drain()
+            open_gaps = self.recorder.db.execute(
+                "SELECT gap_id,stream,reason,metadata_json FROM recorder_gap_events WHERE ended_at IS NULL"
+            ).fetchall()
+            latest_clock = self.recorder.db.execute(
+                "SELECT status,source,offset_seconds,raw_json FROM recorder_clock_health ORDER BY observation_id DESC LIMIT 1"
+            ).fetchone()
+            self.rotation_in_progress = True
+            sealed = self.recorder.rotate_live(archive_dir, day)
+            # Test/commissioning hook represents network arrivals while the
+            # active path is being switched; ordinary producers use the queue.
+            if rotation_hook is not None:
+                rotation_hook()
+            self.recorder = ProspectiveRecorder(self.recorder.database)
+            new_session = self.recorder.start_session(
+                reconnect_of=prior_session_id,
+                metadata={"rotation_from_session": prior_session_id, **(metadata or {})},
+            )
+            self.session_remap[prior_session_id] = new_session
+            self.last_rotation_gap_map = {}
+            for gap in open_gaps:
+                carried = self.recorder.start_gap(
+                    new_session,
+                    gap["stream"],
+                    "CARRIED_OPEN_GAP_AFTER_ROTATION",
+                    {"prior_gap_id": gap["gap_id"], "prior_reason": gap["reason"], "prior_metadata_json": gap["metadata_json"]},
+                )
+                self.last_rotation_gap_map[gap["gap_id"]] = carried
+            self.recorder.connection_event(
+                new_session,
+                "DAILY_ROTATION_COMPLETE",
+                {**sealed, "prior_session_id": prior_session_id, "open_gap_count": len(open_gaps),
+                 "prior_clock_health": dict(latest_clock) if latest_clock else None},
+            )
+            for evidence in self.pending_overflow_evidence:
+                self.recorder.connection_event(new_session, "QUEUE_OVERFLOW", evidence)
+            self.pending_overflow_evidence.clear()
+            self.recorder.observe_timedatectl(new_session)
+            self.rotation_in_progress = False
+            self.drain()
+            return sealed, new_session

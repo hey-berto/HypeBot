@@ -85,3 +85,25 @@ Daily sealing checkpoints WAL, copies a deterministic
 Sealed archives are never deleted by recorder code. Operational resource
 telemetry reports DB/WAL bytes and stream staleness; host CPU, memory and I/O
 must be captured by systemd/cgroup or node exporter during soak.
+
+Live UTC-day rotation is enabled by `HYPE_RECORDER_ARCHIVE_DIR`; the service
+checks the UTC date every 30 seconds and archives the completed active day as
+`hype-raw-YYYY-MM-DD.sqlite3`. The sole durable writer holds its writer lock,
+drains the bounded queue, checkpoints WAL, verifies integrity, atomically
+renames the active DB, computes SHA-256, and marks the archive read-only. It
+then opens a schema-initialized active DB, creates a session linked to the prior
+session, carries any open gap forward with its prior gap ID, records rotation
+and fresh clock-health evidence, and releases the writer to drain arrivals that
+were queued during the handoff. The old archive retains the original session,
+gap, reconnect, and clock history; the new session provides explicit lineage.
+
+Network callbacks continue admitting into the bounded queue while durable
+writes are paused. Queued records bearing the old session ID are deterministically
+remapped to the new linked session before their first write to the new DB, so a
+record is in exactly one daily database. A full queue returns explicit
+`QUEUE_OVERFLOW` evidence instead of silently dropping an event. There is no
+fixed time-based pause promise: its maximum is bounded operationally by the
+configured queue capacity times durable per-event write time, plus WAL
+checkpoint, integrity check, filesystem rename, and new-schema initialization.
+Measure that bound during separate-host commissioning; it is not an epoch006
+runtime property.

@@ -39,6 +39,18 @@ class HyperliquidRecorderService:
         for stream in ("trades", "l2Book", "activeAssetCtx"):
             self.gaps.setdefault(stream, self.recorder.start_gap(self.session_id, stream, "WEBSOCKET_DISCONNECTED", {"reason": reason}))
 
+    def rotate(self, archive_dir: str, day: str) -> dict:
+        """UTC daily handoff without reconnecting or discarding WebSocket arrivals."""
+        assert self.session_id
+        sealed, new_session = self.buffer.rotate(archive_dir, day, self.session_id)
+        self.recorder = self.buffer.recorder
+        self.session_id = new_session
+        self.gaps = {
+            stream: self.buffer.last_rotation_gap_map.get(gap_id, gap_id)
+            for stream, gap_id in self.gaps.items()
+        }
+        return sealed
+
     def handle(self, message: dict) -> None:
         assert self.session_id
         channel, data = message.get("channel"), message.get("data", message)
@@ -64,16 +76,23 @@ class HyperliquidRecorderService:
 
 def main() -> None:
     database = os.environ["HYPE_RECORDER_DATABASE"]
+    archive_dir = os.environ["HYPE_RECORDER_ARCHIVE_DIR"]
     from hyperliquid.info import Info
     recorder = ProspectiveRecorder(database)
     service = HyperliquidRecorderService(recorder, lambda base_url: Info(base_url=base_url, skip_ws=False))
     prior = None
+    active_day = datetime.now(UTC).date().isoformat()
     stop = threading.Event()
     try:
         while not stop.is_set():
             info = service.connect(prior)
             prior = service.session_id
             while not stop.wait(30):
+                utc_day = datetime.now(UTC).date().isoformat()
+                if utc_day != active_day:
+                    service.rotate(archive_dir, active_day)
+                    active_day = utc_day
+                    prior = service.session_id
                 if getattr(info, "ws_manager", None) is None or not info.ws_manager.is_alive():
                     service.disconnected("WEBSOCKET_NOT_ALIVE")
                     break
