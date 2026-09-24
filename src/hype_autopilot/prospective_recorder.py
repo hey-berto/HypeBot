@@ -1,0 +1,123 @@
+"""Separate-host, append-only raw market-data recorder; no trading capability."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from hype_autopilot.hashing import canonical_json
+
+
+CLASSIFICATION = "FUTURE_RESEARCH_DATA — NOT EPOCH006 EVIDENCE"
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS recorder_sessions (
+ session_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, started_monotonic_ns INTEGER NOT NULL,
+ ended_at TEXT, reconnect_of TEXT, metadata_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recorder_raw_events (
+ event_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES recorder_sessions(session_id),
+ stream TEXT NOT NULL, source_timestamp TEXT, received_at TEXT NOT NULL,
+ received_monotonic_ns INTEGER NOT NULL, payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+ source_key TEXT, out_of_order INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(session_id, stream, payload_sha256)
+);
+CREATE TABLE IF NOT EXISTS recorder_stream_state (
+ stream TEXT PRIMARY KEY, last_source_timestamp TEXT, last_received_at TEXT,
+ last_source_key TEXT, session_id TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recorder_gap_events (
+ gap_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, stream TEXT NOT NULL,
+ started_at TEXT NOT NULL, ended_at TEXT, reason TEXT NOT NULL, metadata_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recorder_connection_events (
+ event_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, event TEXT NOT NULL,
+ occurred_at TEXT NOT NULL, metadata_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recorder_raw_stream_time ON recorder_raw_events(stream, source_timestamp);
+CREATE INDEX IF NOT EXISTS recorder_raw_received ON recorder_raw_events(received_at);
+CREATE TRIGGER IF NOT EXISTS recorder_raw_immutable_update BEFORE UPDATE ON recorder_raw_events
+BEGIN SELECT RAISE(ABORT, 'raw recorder evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS recorder_raw_immutable_delete BEFORE DELETE ON recorder_raw_events
+BEGIN SELECT RAISE(ABORT, 'raw recorder evidence is append-only'); END;
+"""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat()
+
+
+class ProspectiveRecorder:
+    """Storage core for WebSocket/poll adapters; deliberately has no order API."""
+
+    def __init__(self, database: str | Path) -> None:
+        self.database = Path(database)
+        self.db = sqlite3.connect(self.database)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(SCHEMA)
+        self.db.commit()
+
+    def close(self) -> None:
+        self.db.close()
+
+    def start_session(self, *, reconnect_of: str | None = None, metadata: dict | None = None) -> str:
+        session_id = str(uuid4())
+        now = _utc_now()
+        self.db.execute(
+            "INSERT INTO recorder_sessions VALUES (?,?,?,?,?,?)",
+            (session_id, _iso(now), time.monotonic_ns(), None, reconnect_of, canonical_json(metadata or {})),
+        )
+        self.connection_event(session_id, "SESSION_STARTED", {"subscriptions": ["trades", "l2Book", "activeAssetCtx", "funding"]})
+        self.db.commit()
+        return session_id
+
+    def connection_event(self, session_id: str, event: str, metadata: dict | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO recorder_connection_events(session_id,event,occurred_at,metadata_json) VALUES (?,?,?,?)",
+            (session_id, event, _iso(_utc_now()), canonical_json(metadata or {})),
+        )
+
+    def start_gap(self, session_id: str, stream: str, reason: str, metadata: dict | None = None) -> str:
+        gap_id = str(uuid4())
+        self.db.execute(
+            "INSERT INTO recorder_gap_events VALUES (?,?,?,?,?,?,?)",
+            (gap_id, session_id, stream, _iso(_utc_now()), None, reason, canonical_json(metadata or {})),
+        )
+        self.db.commit()
+        return gap_id
+
+    def end_gap(self, gap_id: str, metadata: dict | None = None) -> None:
+        self.db.execute("UPDATE recorder_gap_events SET ended_at=?,metadata_json=? WHERE gap_id=? AND ended_at IS NULL", (_iso(_utc_now()), canonical_json(metadata or {}), gap_id))
+        self.db.commit()
+
+    def ingest(self, *, session_id: str, stream: str, payload: dict, source_timestamp: datetime | None, source_key: str | None = None, received_at: datetime | None = None, monotonic_ns: int | None = None) -> str:
+        received = received_at or _utc_now()
+        source = _iso(source_timestamp) if source_timestamp else None
+        digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+        prior = self.db.execute("SELECT last_source_timestamp FROM recorder_stream_state WHERE stream=?", (stream,)).fetchone()
+        out_of_order = bool(prior and source and prior[0] and source < prior[0])
+        cursor = self.db.execute(
+            "INSERT OR IGNORE INTO recorder_raw_events(session_id,stream,source_timestamp,received_at,received_monotonic_ns,payload_json,payload_sha256,source_key,out_of_order) VALUES (?,?,?,?,?,?,?,?,?)",
+            (session_id, stream, source, _iso(received), monotonic_ns or time.monotonic_ns(), canonical_json(payload), digest, source_key, int(out_of_order)),
+        )
+        if cursor.rowcount:
+            self.db.execute(
+                "INSERT INTO recorder_stream_state VALUES (?,?,?,?,?,?) ON CONFLICT(stream) DO UPDATE SET last_source_timestamp=excluded.last_source_timestamp,last_received_at=excluded.last_received_at,last_source_key=excluded.last_source_key,session_id=excluded.session_id,updated_at=excluded.updated_at",
+                (stream, source, _iso(received), source_key, session_id, _iso(received)),
+            )
+        self.db.commit()
+        return "DUPLICATE" if not cursor.rowcount else ("OUT_OF_ORDER" if out_of_order else "RECORDED")
+
+    def health(self) -> dict:
+        integrity = self.db.execute("PRAGMA integrity_check").fetchone()[0]
+        open_gaps = self.db.execute("SELECT COUNT(*) FROM recorder_gap_events WHERE ended_at IS NULL").fetchone()[0]
+        return {"classification": CLASSIFICATION, "integrity": integrity, "open_gaps": open_gaps, "events": self.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0]}
