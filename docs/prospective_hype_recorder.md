@@ -54,3 +54,18 @@ distributed system.
 The separate-host launcher subscribes to HYPE trades, L2, and active context,
 records funding through public read-only polling, and starts a distinct session
 after reconnect. It still requires a seven-day VPS soak before any installation.
+
+## Clock, lineage, and soak acceptance
+
+Each session stores Git SHA, schema version, config identity, process-start UTC,
+and reconnect lineage. `timedatectl` synchronization evidence is stored as an
+immutable health event. `UNCERTAIN` clock health never rewrites prior receipt
+times; future replay must qualify those intervals rather than correct them.
+
+Install only on a separate Ubuntu host with `HYPE_RECORDER_DATABASE`,
+`HYPE_RECORDER_GIT_SHA`, and `HYPE_RECORDER_CONFIG_ID`. During the seven-day
+soak, measure rows/day, DB/WAL growth, L2 share, CPU/memory/I/O, stream rate,
+lag/backlog, gaps, duplicates, out-of-order rows, and clock status. Execute one
+controlled disconnect/reconnect, process restart, and daily rotation/integrity
+check. `NATURAL_DISCONNECT_NOT_OBSERVED` is not a failure. Continue read-only
+monitoring to day 30 after a provisional pass.

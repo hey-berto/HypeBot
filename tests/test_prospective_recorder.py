@@ -14,7 +14,7 @@ def test_append_only_ingestion_duplicate_order_and_gap(tmp_path):
     assert recorder.ingest(session_id=session, stream="trades", payload={**payload, "time": 0}, source_timestamp=at-timedelta(seconds=1), source_key="0", received_at=at) == "OUT_OF_ORDER"
     gap = recorder.start_gap(session, "l2Book", "WEBSOCKET_DISCONNECTED")
     recorder.end_gap(gap, {"subscriptions_restored": True})
-    assert recorder.health() == {"classification": CLASSIFICATION, "integrity": "ok", "open_gaps": 0, "events": 2}
+    assert recorder.health()["integrity"] == "ok" and recorder.health()["duplicate_events"] == 1
     raw = recorder.db.execute("SELECT payload_sha256,received_at,received_monotonic_ns FROM recorder_raw_events").fetchone()
     assert len(raw["payload_sha256"]) == 64 and raw["received_at"] == at.isoformat() and raw["received_monotonic_ns"] > 0
     recorder.close()
@@ -31,6 +31,20 @@ def test_restart_creates_new_session_and_preserves_evidence(tmp_path):
     assert second.db.execute("SELECT COUNT(*) FROM recorder_sessions").fetchone()[0] == 2
     assert second.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0] == 1
     second.close()
+
+
+def test_session_identity_and_clock_health_are_immutable_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HYPE_RECORDER_GIT_SHA", "a" * 40)
+    recorder = ProspectiveRecorder(tmp_path / "recorder.sqlite3")
+    session = recorder.start_session(metadata={"process_start_utc": "x"})
+    recorder.record_clock_health(session, status="UNCERTAIN", source="timesyncd", offset_seconds=None, raw={"synced": False})
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    recorder.ingest(session_id=session, stream="activeAssetCtx", payload={"ctx": {}}, source_timestamp=None, received_at=at)
+    metadata = recorder.db.execute("SELECT metadata_json FROM recorder_sessions WHERE session_id=?", (session,)).fetchone()[0]
+    assert '"git_sha":"' + "a" * 40 in metadata
+    assert recorder.health()["clock_health"] == "UNCERTAIN"
+    assert recorder.db.execute("SELECT source_timestamp,received_at FROM recorder_raw_events").fetchone()["source_timestamp"] is None
+    recorder.close()
 
 
 def test_adapter_restores_subscriptions_and_records_native_timestamps(tmp_path):

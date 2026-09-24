@@ -22,6 +22,7 @@ class HyperliquidRecorderService:
 
     def connect(self, reconnect_of: str | None = None) -> object:
         self.session_id = self.recorder.start_session(reconnect_of=reconnect_of)
+        self.recorder.observe_timedatectl(self.session_id)
         info = self.info_factory("https://api.hyperliquid.xyz")
         for subscription in self.subscriptions:
             info.subscribe(subscription, self.handle)

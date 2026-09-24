@@ -6,6 +6,8 @@ import hashlib
 import json
 import sqlite3
 import time
+import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +21,10 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS recorder_sessions (
  session_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, started_monotonic_ns INTEGER NOT NULL,
  ended_at TEXT, reconnect_of TEXT, metadata_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recorder_clock_health (
+ observation_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, observed_at TEXT NOT NULL,
+ monotonic_ns INTEGER NOT NULL, status TEXT NOT NULL, source TEXT, offset_seconds REAL, raw_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS recorder_raw_events (
  event_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES recorder_sessions(session_id),
@@ -74,11 +80,26 @@ class ProspectiveRecorder:
         now = _utc_now()
         self.db.execute(
             "INSERT INTO recorder_sessions VALUES (?,?,?,?,?,?)",
-            (session_id, _iso(now), time.monotonic_ns(), None, reconnect_of, canonical_json(metadata or {})),
+            (session_id, _iso(now), time.monotonic_ns(), None, reconnect_of, canonical_json({"classification": CLASSIFICATION, "git_sha": os.environ.get("HYPE_RECORDER_GIT_SHA", "UNSET"), "schema_version": "RECORDER_SCHEMA_V2", "config_identity": os.environ.get("HYPE_RECORDER_CONFIG_ID", "UNSET"), **(metadata or {})})),
         )
         self.connection_event(session_id, "SESSION_STARTED", {"subscriptions": ["trades", "l2Book", "activeAssetCtx", "funding"]})
         self.db.commit()
         return session_id
+
+    def record_clock_health(self, session_id: str, *, status: str, source: str | None, offset_seconds: float | None, raw: dict) -> None:
+        now = _utc_now()
+        self.db.execute("INSERT INTO recorder_clock_health(session_id,observed_at,monotonic_ns,status,source,offset_seconds,raw_json) VALUES (?,?,?,?,?,?,?)", (session_id, _iso(now), time.monotonic_ns(), status, source, offset_seconds, canonical_json(raw)))
+        self.connection_event(session_id, "CLOCK_HEALTH_" + status, {"source": source, "offset_seconds": offset_seconds})
+        self.db.commit()
+
+    def observe_timedatectl(self, session_id: str) -> None:
+        try:
+            result = subprocess.run(["timedatectl", "show", "--property=NTPSynchronized", "--property=NTPService", "--property=SystemClockSynchronized"], text=True, capture_output=True, check=False, timeout=5)
+            raw = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in result.stdout.splitlines() if "=" in line}
+            healthy = raw.get("NTPSynchronized") == "yes" or raw.get("SystemClockSynchronized") == "yes"
+            self.record_clock_health(session_id, status="HEALTHY" if healthy else "UNCERTAIN", source=raw.get("NTPService"), offset_seconds=None, raw=raw)
+        except Exception as exc:
+            self.record_clock_health(session_id, status="UNCERTAIN", source=None, offset_seconds=None, raw={"error": repr(exc)})
 
     def connection_event(self, session_id: str, event: str, metadata: dict | None = None) -> None:
         self.db.execute(
@@ -114,10 +135,15 @@ class ProspectiveRecorder:
                 "INSERT INTO recorder_stream_state VALUES (?,?,?,?,?,?) ON CONFLICT(stream) DO UPDATE SET last_source_timestamp=excluded.last_source_timestamp,last_received_at=excluded.last_received_at,last_source_key=excluded.last_source_key,session_id=excluded.session_id,updated_at=excluded.updated_at",
                 (stream, source, _iso(received), source_key, session_id, _iso(received)),
             )
+        else:
+            self.connection_event(session_id, "DUPLICATE", {"stream": stream, "payload_sha256": digest})
         self.db.commit()
         return "DUPLICATE" if not cursor.rowcount else ("OUT_OF_ORDER" if out_of_order else "RECORDED")
 
     def health(self) -> dict:
         integrity = self.db.execute("PRAGMA integrity_check").fetchone()[0]
         open_gaps = self.db.execute("SELECT COUNT(*) FROM recorder_gap_events WHERE ended_at IS NULL").fetchone()[0]
-        return {"classification": CLASSIFICATION, "integrity": integrity, "open_gaps": open_gaps, "events": self.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0]}
+        rows = self.db.execute("SELECT stream,COUNT(*) n,MAX(received_at) last_received,SUM(out_of_order) out_of_order FROM recorder_raw_events GROUP BY stream").fetchall()
+        duplicates = self.db.execute("SELECT COUNT(*) FROM recorder_connection_events WHERE event='DUPLICATE'").fetchone()[0]
+        clock = self.db.execute("SELECT status FROM recorder_clock_health ORDER BY observation_id DESC LIMIT 1").fetchone()
+        return {"classification": CLASSIFICATION, "integrity": integrity, "open_gaps": open_gaps, "events": self.db.execute("SELECT COUNT(*) FROM recorder_raw_events").fetchone()[0], "streams": {row["stream"]: {"events": row["n"], "last_received": row["last_received"], "out_of_order": row["out_of_order"]} for row in rows}, "duplicate_events": duplicates, "clock_health": clock["status"] if clock else "UNOBSERVED"}
