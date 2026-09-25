@@ -1,0 +1,37 @@
+record_type: PHASE3_DERIVATION_SPEC_V2_FREEZE_AND_IMPLEMENTATION_AUTHORIZATION
+record_version: 1
+approval_timestamp_utc: 2026-09-25T00:52:55Z
+specification_version: PHASE3_EPOCH006_DERIVATION_SPEC_V2
+approved_commit: fb16b9a5aa05671d098a6baf5e9fc3bfad8d8798
+canonical_spec_path: config/phase3/epoch006_derivation_spec_v2.yaml
+canonical_sha256: d5387568a639af105165a8e00705edef1509145706dce58519d2e56b1ff3e629
+reviewer_disposition: SECONDARY_V2_REVIEW_APPROVED_WITH_MINOR_NONBLOCKING_NOTES
+review_findings:
+  prior_material_issues_resolved: 12
+  remaining_blockers: 0
+  new_blockers: 0
+no_outcome_access:
+  attested: true
+  statement: No epoch006 outcomes were accessed while revising, reviewing, or freezing V2.
+frozen_dependencies:
+  evaluator_path: src/hype_autopilot/phase3/gate.py
+  evaluator_sha256: e606da9c85a6752de2a0bf3b5ba7e53819d8d78fcf46c0b020cdc5a4c52ce78b
+  gate_config_path: config/phase3/analysis_gate_v1.yaml
+  gate_config_sha256: 9760e1d3ae3c4ddcbdd7a43d993c86220270e0b22ec79e4488b9bd5261ad87d2
+implementation_gate:
+  status: AUTHORIZED_ONLY_AGAINST_FROZEN_V2
+  authorized_component: GateEvidence database-to-evidence adapter
+  precondition: Canonical V2 identity and every frozen dependency identity must match this record.
+  mismatch_behavior: FAIL_CLOSED
+  evaluation_authorized: false
+  live_runtime_change_authorized: false
+nonblocking_notes:
+  boundary_fixture:
+    status: RECORDED_OUTSIDE_CANONICAL_SPEC
+    location: docs/phase3_epoch006_derivation_v2_golden_fixtures.md
+    case: entry_time_equals_formal_cutoff
+  simulator_limitation:
+    status: FROZEN_SIMULATOR_LIMITATION
+    location: docs/epoch006_day42_evidence_freeze_runbook.md
+    statement: Entry slippage may be counted once through slipped entry price and again through total_slippage.
+

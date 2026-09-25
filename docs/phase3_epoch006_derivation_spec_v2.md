@@ -1,10 +1,16 @@
-# PHASE3_EPOCH006_DERIVATION_SPEC_V2 — revised draft
+# PHASE3_EPOCH006_DERIVATION_SPEC_V2 — frozen for implementation
 
-**Status: REVISED_DRAFT_PENDING_INDEPENDENT_FREEZE_REVIEW.** This is an
-additive blinded amendment for the unchanged epoch006 evidence window. It does
-not alter the V1 evaluator or gate and does not authorize a `GateEvidence`
-adapter. Any eventual result under this document is an **AMENDED BLINDED
-PRIMARY ANALYSIS**, not an unqualified V1 result.
+**Status: FROZEN_FOR_IMPLEMENTATION.** Independent review approved the exact
+canonical V2 identity at commit
+`fb16b9a5aa05671d098a6baf5e9fc3bfad8d8798`, canonical SHA-256
+`d5387568a639af105165a8e00705edef1509145706dce58519d2e56b1ff3e629`, with
+disposition `SECONDARY_V2_REVIEW_APPROVED_WITH_MINOR_NONBLOCKING_NOTES`. The
+separate freeze and implementation-authorization record is
+`config/phase3/epoch006_derivation_spec_v2_freeze_authorization.yaml`; it does
+not alter the approved canonical specification bytes. This remains an additive
+blinded amendment for the unchanged epoch006 evidence window. It does not
+alter the V1 evaluator or gate. Any eventual result under this document is an
+**AMENDED BLINDED PRIMARY ANALYSIS**, not an unqualified V1 result.
 
 ## Version history
 
@@ -199,7 +205,9 @@ package and signed zero becomes `0.0000000000`.
 
 ## Implementation gate
 
-No adapter may be implemented until this revision has no consequential
-unresolved fields, all expanded synthetic fixtures are complete, an
-independent reviewer approves the exact revised bytes, the final canonical
-hash is frozen, and the outcome-access firewall remains intact.
+The independent review and freeze prerequisites are satisfied by the separate
+authorization record. A `GateEvidence` adapter may now be implemented only
+against the frozen V2 identity. Any canonical-specification or frozen-dependency
+identity mismatch must fail closed. This authorization does not authorize an
+evaluation, access to epoch006 outcomes, a live-runtime change, or a change to
+the evaluator or gate configuration.

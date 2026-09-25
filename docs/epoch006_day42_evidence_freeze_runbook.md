@@ -3,6 +3,19 @@
 Do not execute before `2026-11-05T00:15:00Z`. This procedure creates a new,
 immutable evidence package; it does not modify, stop, or reconfigure epoch006.
 
+## Frozen V2 identity and implementation authorization
+
+The only authorized database-to-`GateEvidence` derivation specification is
+`PHASE3_EPOCH006_DERIVATION_SPEC_V2` at approved commit
+`fb16b9a5aa05671d098a6baf5e9fc3bfad8d8798`, canonical SHA-256
+`d5387568a639af105165a8e00705edef1509145706dce58519d2e56b1ff3e629`.
+Its governance overlay is
+`config/phase3/epoch006_derivation_spec_v2_freeze_authorization.yaml`. Before
+using an adapter, recompute the parsed-YAML canonical hash and verify every
+dependency identity in that record. Any mismatch fails closed. The adapter
+may implement only this frozen V2; neither its existence nor this runbook
+authorizes evaluation before the cutoff and all other gates are satisfied.
+
 ## Cutoff semantics
 
 The final included scheduled boundary is exactly `2026-11-05T00:15:00Z`.
@@ -66,10 +79,22 @@ formal evaluator, operational reader, and Day-42 shadow tool.
 The evaluator file SHA must be
 `e606da9c85a6752de2a0bf3b5ba7e53819d8d78fcf46c0b020cdc5a4c52ce78b`.
 The current formal evaluator accepts an already-constructed `GateEvidence`; it
-has no implemented production database-to-`GateEvidence` reader. Therefore the
-freeze is ready, but formal primary evaluation must STOP pending a separately
-reviewed, frozen-methodology evidence-construction adapter. Do not substitute
-the operational telemetry reader: it intentionally excludes outcomes.
+has no implemented production database-to-`GateEvidence` reader. The adapter
+is authorized for implementation only against the frozen V2 identity above,
+and any mismatch must fail closed. Until that separately reviewed adapter is
+implemented and installed, formal primary evaluation must STOP. Do not
+substitute the operational telemetry reader: it intentionally excludes
+outcomes.
+
+## Frozen simulator reporting limitation
+
+`FROZEN_SIMULATOR_LIMITATION`: the pre-existing simulator may count entry
+slippage twice internally—once because the slipped entry price is used in the
+gross-return path and once because stored entry slippage is included in
+`total_slippage`. Do not modify the simulator, reconstruct a counterfactual
+return, or deduct/correct simulator costs in the adapter. Day-42 reporting must
+state this limitation and must use the persisted `return_pct` exactly as frozen
+V2 requires.
 
 ## Stop conditions
 
