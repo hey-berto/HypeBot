@@ -1,8 +1,15 @@
 specification_version: PHASE3_EPOCH006_DERIVATION_SPEC_V2
-status: DRAFT_PENDING_INDEPENDENT_REVIEW
+revision: SECONDARY_METHODOLOGY_REVIEW_AMENDMENT_1
+status: REVISED_DRAFT_PENDING_INDEPENDENT_FREEZE_REVIEW
 created_at_utc: 2026-09-24T11:29:33Z
+revised_at_utc: 2026-09-25T00:00:00Z
 scope: AMENDED_BLINDED_PRIMARY_ANALYSIS
 reason_for_amendment: V1 froze the evaluator but not the database-to-GateEvidence derivation layer.
+provenance:
+  superseded_draft_commit: 5c425adb6230f3b94c959d208245b36879e2ad9c
+  superseded_draft_canonical_sha256: 4dc1724829aaedb401b669de9daab800761e238237f9717be002972ddaef7bce
+  superseded_draft_status: SECONDARY_V2_REVIEW_ADDITIONAL_CHANGES_REQUIRED
+  amendment_note: Secondary review required denominator, dimensional, trigger, interval, regime, numeric, exposure, materiality, and fixture corrections.
 evidence_window:
   epoch_id: phase2_epoch_006
   prospective_anchor: 2026-09-24T00:11:09.998160Z
@@ -14,45 +21,115 @@ v1_preservation:
   gate_config_sha256: 9760e1d3ae3c4ddcbdd7a43d993c86220270e0b22ec79e4488b9bd5261ad87d2
   statement: V1 remains unchanged but was under-specified for production GateEvidence derivation.
 author_exposure:
+  seen:
+    - first_four_validation_health
+    - identity_hashes
+    - integrity_and_gap_counts
+    - timer_and_process_telemetry
+    - historical_sample_rate_planning
+    - synthetic_fixture_results
+    - historical_or_example_coeligibility_figure_3_of_17
   not_seen: [epoch006_pnl, returns, expectancy, win_rates, comparative_performance, day42_outcomes]
   no_outcome_access_attestation: true
-  operational_information_seen: [first_four_validation_health, identity_hashes, integrity_and_gap_counts, timer_and_process_telemetry, historical_sample_rate_planning, synthetic_fixture_results]
-  qualification: Operational/sample telemetry may reveal sample availability; this is not complete outcome blindness.
+  decision_basis: frozen_source_semantics_units_determinism_and_conservative_accounting_not_observed_operational_counts
 canonical_population:
   include: SCORED_PROSPECTIVE_scoreable_snapshots_with_timestamp_inclusive_between_first_boundary_and_cutoff
   rejected_or_non_scoreable: EXCLUDED_NEVER_REINTERPRETED
-  post_cutoff: REJECT
+  post_cutoff: REJECT_PACKAGE
 pair_state:
   coeligible: both_legs_flat_immediately_before_current_boundary_decisions
   active_interval: signal_time_strictly_before_boundary_and_exit_time_null_or_strictly_after_boundary
-  not_coeligible: either_leg_not_flat
-  complete: coeligible_and_neither_leg_pending_or_open
-  right_censored: coeligible_and_at_least_one_leg_pending_or_open
+  signal_time_semantics:
+    quant: logical_snapshot_boundary
+    llm: provider_request_end_wall_clock_time
+    hybrid: maximum_of_quant_created_at_and_llm_request_end
+  boundary_exact_signal: not_active_at_that_boundary
+  boundary_exact_exit: flat_at_that_boundary
+  not_coeligible: either_leg_active_under_the_strict_interval
+  complete: coeligible_and_neither_leg_pending_or_open_at_cutoff
+  right_censored: coeligible_and_at_least_one_leg_pending_or_open_at_cutoff
   excluded: non_scoreable_or_rejected_or_not_coeligible
   boundary_sequence: simulator_progression_then_snapshot_then_decisions_then_submission
+  sequence_evidence: trusted_frozen_runtime_code_not_independently_persisted_as_stage_level_events
 return_unit:
   chosen: return_pct
-  definition: stored_closed_trade_return_pct_or_zero_for_NO_TRADE_or_suppressed_completed_leg
-  classification: PRINCIPLE_DERIVED_NEW_CONVENTION
+  source_formula: net_pnl_usd_per_one_hype_divided_by_entry_price_usd_per_hype
+  exact_denominator: entry_price_usd_per_hype_times_fixed_quantity_1_hype
+  denominator_units: USD
+  implied_position_quantity_hype: 1
+  quantity_provenance: simulator_has_no_quantity_field_and_computes_price_difference_fees_funding_and_slippage_per_one_hype
+  completed_closed_trade: stored_paper_trades_return_pct
+  no_trade_or_completed_suppressed_leg: 0.0
+  pending_or_open: right_censored_no_numeric_return
+  classification: SOURCE_DERIVED_DENOMINATOR_AND_PRINCIPLE_DERIVED_UNIT_SELECTION
+simulator_costs:
+  SIMULATOR_COSTS_ALREADY_EMBEDDED_IN_RETURN_PCT: true
+  fees: entry_and_exit_fees_subtracted_in_net_pnl
+  funding: accumulated_funding_cost_subtracted_in_net_pnl
+  entry_slippage: embedded_in_slipped_entry_price_and_also_in_total_slippage_on_live_incremental_path
+  exit_slippage: subtracted_via_total_slippage
+  evaluator_rule: never_deduct_fees_funding_or_slippage_again
+  provenance: simulation_engine_PaperSimulator_enter_and_manage
 cost_adjustment:
-  chosen: paired_return_difference_minus_treatment_api_cost_normalized_by_shared_snapshot_price_plus_control_api_cost_normalized_by_shared_snapshot_price
-  shared_snapshot_price: market.hype_features.last_15m_close
+  evaluation_objective: STANDALONE_ARCHITECTURE_ECONOMICS
+  formal_question: Would_each_individual_LLM_dependent_architecture_justify_its_own_full_inference_cost
+  architecture_adjusted_return: architecture_return_pct_minus_architecture_api_cost_return
+  pair_formula: treatment_adjusted_return_minus_control_adjusted_return
+  api_cost_return_formula: api_cost_usd_divided_by_relevant_one_hype_notional_usd
+  denominator_when_actual_entry_exists: strategy_paper_trade_entry_price_usd_per_hype_times_1_hype
+  denominator_timestamp_when_actual_entry_exists: persisted_entry_time
+  denominator_when_no_actual_entry_exists: shared_snapshot_last_15m_close_usd_per_hype_times_1_hype
+  denominator_timestamp_when_no_actual_entry_exists: shared_snapshot_timestamp
+  no_trade: zero_unadjusted_return_but_full_applicable_api_cost_uses_shared_snapshot_one_hype_notional
+  completed_suppressed_without_entry: zero_unadjusted_return_but_full_applicable_api_cost_uses_shared_snapshot_one_hype_notional
+  pending_or_open: right_censored_and_absent_from_complete_numeric_series
+  denominator_guard: reject_package_if_selected_denominator_is_missing_nonfinite_or_not_strictly_positive
   classification: PRINCIPLE_DERIVED_NEW_CONVENTION
-  double_counting: return_pct_already_includes_stored_entry_exit_fees_funding_and_simulator_slippage;_only_API_cost_is_additional
 api_cost:
-  chosen: full_invocation_cost_to_each_LLM_dependent_treatment_comparison_and_zero_to_quant_control
+  source: llm_decisions_model_cost_usd_for_the_shared_snapshot
+  chosen: full_recorded_llm_invocation_cost_to_each_LLM_dependent_architecture_comparison
   applies_to: [LLM_V1, HYBRID_TREND_LLM_V1, HYBRID_MR_LLM_V1]
-  non_additivity_warning: Per-comparison costs are not portfolio costs and must not be summed across comparisons.
+  quant_control_cost: 0.0
+  hybrid_rule: use_the_same_shared_snapshot_LLM_cost_but_normalize_by_the_hybrid_actual_entry_notional_or_no_entry_reference_notional
+  non_additivity_warning: Never_sum_API_costs_across_separate_comparison_outputs_to_estimate_total_system_spend_because_the_same_call_is_intentionally_reused.
   classification: PRINCIPLE_DERIVED_NEW_CONVENTION
 triggered_trade:
-  chosen: one_closed_paper_trade_per_strategy_decision_originated_in_population
-  excludes: [NO_TRADE, PENDING_ENTRY, OPEN, SUPPRESSED_POSITION_OPEN, SUPPRESSED_INVALID_TARGET_AFTER_LATENCY, SUPPRESSED_NO_ENTRY_DATA]
+  chosen: actual_executed_entry
+  definition: one_in_population_nonexcluded_strategy_trade_with_non_null_entry_time_at_or_before_formal_cutoff
+  included_statuses: [OPEN, CLOSED]
+  excluded_statuses: [NO_TRADE, PENDING_ENTRY, SUPPRESSED_POSITION_OPEN, SUPPRESSED_INVALID_TARGET_AFTER_LATENCY, SUPPRESSED_NO_ENTRY_DATA]
+  rationale: threshold_measures_genuinely_triggered_and_executed_opportunities_while_right_censoring_separately_handles_unrealized_returns
   classification: PRINCIPLE_DERIVED_NEW_CONVENTION
 regime:
-  trend_state: snapshot.regime.trend
-  volatility_state: snapshot.regime.volatility
-  regime_bucket: snapshot.regime.combined
-  missing_label: REJECT
+  trend_state_field: snapshot.regime.trend
+  trend_state_domain: [UP, DOWN, RANGE, UNKNOWN]
+  volatility_state_field: snapshot.regime.volatility
+  volatility_state_domain: [LOW, NORMAL, HIGH, UNKNOWN]
+  combined_field: snapshot.regime.combined
+  combined_full_domain:
+    - UP_LOW
+    - UP_NORMAL
+    - UP_HIGH
+    - UP_UNKNOWN
+    - DOWN_LOW
+    - DOWN_NORMAL
+    - DOWN_HIGH
+    - DOWN_UNKNOWN
+    - RANGE_LOW
+    - RANGE_NORMAL
+    - RANGE_HIGH
+    - RANGE_UNKNOWN
+    - UNKNOWN_LOW
+    - UNKNOWN_NORMAL
+    - UNKNOWN_HIGH
+    - UNKNOWN_UNKNOWN
+  scoreable_population_domain: [UP_LOW, UP_NORMAL, UP_HIGH, DOWN_LOW, DOWN_NORMAL, DOWN_HIGH, RANGE_LOW, RANGE_NORMAL, RANGE_HIGH]
+  combined_provenance: independently_persisted_in_snapshot_but_deterministically_derived_as_trend_value_underscore_volatility_value
+  consistency_rule: combined_must_equal_trend_state_underscore_volatility_state
+  partial_missingness: REJECT_PACKAGE
+  unknown_in_scoreable_population: REJECT_PACKAGE
+  inconsistent_combined_label: REJECT_PACKAGE
+  non_scoreable_snapshot: EXCLUDE_BOUNDARY
 right_censoring:
   duration: formal_cutoff_minus_shared_snapshot_timestamp
   cardinality: one_duration_per_coeligible_right_censored_pair
@@ -60,14 +137,26 @@ right_censoring:
   classification: PRINCIPLE_DERIVED_NEW_CONVENTION
 series_order:
   chosen: ascending_snapshot_timestamp_then_snapshot_hash
-  classification: FROZEN_PRECEDENT
+  snapshot_hash_identity: existing_immutable_Phase2_SHA256_of_canonical_snapshot_payload
+  classification: FROZEN_PRECEDENT_WITH_EXPLICIT_TOTAL_ORDER
 numeric_policy:
+  sqlite_storage: numeric_columns_declared_REAL_and_bound_from_Python_float
+  sqlite_read_type: Python_float
+  decimal_conversion: Decimal(str(source_float))
   decimal_places: 10
   rounding: ROUND_HALF_EVEN
   serialization: hype_autopilot.hashing.canonical_json
   zero: 0.0000000000
   missing_or_non_applicable: null_only_outside_complete_numeric_series
+  invalid_numeric: REJECT_PACKAGE
 implementation_gate:
-  adapter_prohibited_until: [no_unresolved_consequential_fields, written_rationales, discriminating_golden_fixtures, independent_review, final_bytes_frozen, spec_sha256_recorded, outcome_firewall_intact]
+  adapter_prohibited_until:
+    - no_unresolved_consequential_fields
+    - written_rationales
+    - expanded_discriminating_golden_fixtures_complete
+    - independent_freeze_review_approved
+    - final_bytes_frozen
+    - revised_spec_sha256_recorded
+    - outcome_firewall_intact
 independent_review:
-  status: PENDING
+  status: PENDING_REVIEW_OF_REVISED_BYTES
