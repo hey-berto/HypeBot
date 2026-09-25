@@ -1,0 +1,111 @@
+{
+  "as_of": "2026-11-05T00:15:00+00:00",
+  "evidence_source": "FROZEN_DB_V2:d5387568a639af105165a8e00705edef1509145706dce58519d2e56b1ff3e629",
+  "phase2_epoch_id": "phase2_epoch_006",
+  "pairs": {
+    "HYBRID_MR_LLM_V1__vs__QUANT_MR_V1": {
+      "cost_adjusted_differences": [
+        "-0.0002000000",
+        "-0.0001500000",
+        "-0.0001333333"
+      ],
+      "open_position_count": 0,
+      "open_position_durations_seconds": [],
+      "paired_differences": [
+        "0.0000000000",
+        "0.0000000000",
+        "0.0000000000"
+      ],
+      "regime_buckets": [
+        "UP_NORMAL",
+        "DOWN_HIGH",
+        "RANGE_LOW"
+      ],
+      "trend_states": [
+        "UP",
+        "DOWN",
+        "RANGE"
+      ],
+      "volatility_states": [
+        "NORMAL",
+        "HIGH",
+        "LOW"
+      ]
+    },
+    "HYBRID_TREND_LLM_V1__vs__QUANT_TREND_V1": {
+      "cost_adjusted_differences": [
+        "0.0008000000",
+        "-0.0001500000"
+      ],
+      "open_position_count": 1,
+      "open_position_durations_seconds": [
+        "0.0000000000"
+      ],
+      "paired_differences": [
+        "0.0010000000",
+        "0.0000000000"
+      ],
+      "regime_buckets": [
+        "UP_NORMAL",
+        "DOWN_HIGH"
+      ],
+      "trend_states": [
+        "UP",
+        "DOWN"
+      ],
+      "volatility_states": [
+        "NORMAL",
+        "HIGH"
+      ]
+    },
+    "LLM_V1__vs__QUANT_MR_V1": {
+      "cost_adjusted_differences": [
+        "0.0118000000"
+      ],
+      "open_position_count": 1,
+      "open_position_durations_seconds": [
+        "3627900.0000000000"
+      ],
+      "paired_differences": [
+        "0.0120000000"
+      ],
+      "regime_buckets": [
+        "UP_NORMAL"
+      ],
+      "trend_states": [
+        "UP"
+      ],
+      "volatility_states": [
+        "NORMAL"
+      ]
+    },
+    "LLM_V1__vs__QUANT_TREND_V1": {
+      "cost_adjusted_differences": [
+        "0.0018000000"
+      ],
+      "open_position_count": 1,
+      "open_position_durations_seconds": [
+        "3627900.0000000000"
+      ],
+      "paired_differences": [
+        "0.0020000000"
+      ],
+      "regime_buckets": [
+        "UP_NORMAL"
+      ],
+      "trend_states": [
+        "UP"
+      ],
+      "volatility_states": [
+        "NORMAL"
+      ]
+    }
+  },
+  "triggered_trade_counts": {
+    "HYBRID_MR_LLM_V1": 0,
+    "HYBRID_TREND_LLM_V1": 1,
+    "LLM_V1": 2,
+    "QUANT_MR_V1": 0,
+    "QUANT_TREND_V1": 2
+  }
+}
